@@ -66,8 +66,8 @@ EMA_FAST   = 9    # fast EMA period
 EMA_SLOW   = 21   # slow EMA period used as trend filter
 RSI_PERIOD = 14   # RSI lookback
 
-RSI_BUY_THRESHOLD  = 55   # go LONG only when RSI < this (not overbought; QQQ-tuned)
-RSI_SELL_THRESHOLD = 45   # go SHORT only when RSI > this (not oversold; QQQ-tuned)
+RSI_BUY_THRESHOLD  = 45   # go LONG only when RSI < this (not overbought; QQQ-tuned)
+RSI_SELL_THRESHOLD = 55   # go SHORT only when RSI > this (not oversold; QQQ-tuned)
 
 BAR_TIMEFRAME = 1    # minutes per bar (1-minute bars)
 BARS_TO_FETCH = 100  # number of historical bars to pull for indicator warmup
@@ -89,7 +89,7 @@ TAKE_PROFIT_DOLLARS = TAKE_PROFIT_TICKS * TICK_VALUE_DOLLARS   # $3.00 / share
 
 # ─── Daily Risk Rules ─────────────────────────────────────────────────────────
 MAX_TRADES_PER_DAY = 1       # 1 trade per day (conservative paper-test limit)
-DAILY_LOSS_LIMIT   = -100.0  # stop trading when daily realized P&L hits this
+DAILY_LOSS_LIMIT   = -800.0  # stop trading when daily realized P&L hits this
                               # 10 shares × $1 SL = $10/trade max loss;
                               # $100 limit gives 10 losing trades before halt
 
