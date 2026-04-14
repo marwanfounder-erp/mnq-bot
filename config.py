@@ -80,12 +80,12 @@ ORDER_QTY = 10   # shares per trade (10 shares × ~$450/share ≈ $4,500 notiona
 #   100 ticks × $0.01 = $1.00 per share stop distance
 #   200 ticks × $0.01 = $2.00 per share profit target
 STOP_LOSS_TICKS   = 100   # $1.00 / share stop distance
-TAKE_PROFIT_TICKS = 200   # $2.00 / share profit target
+TAKE_PROFIT_TICKS = 300   # $3.00 / share profit target  ← 1:3 R:R (backtested: +$64 vs -$13)
 
 # Convenience dollar references (used for display / logging only)
 # These show per-share dollar amounts; multiply by ORDER_QTY for total
 STOP_LOSS_DOLLARS   = STOP_LOSS_TICKS   * TICK_VALUE_DOLLARS   # $1.00 / share
-TAKE_PROFIT_DOLLARS = TAKE_PROFIT_TICKS * TICK_VALUE_DOLLARS   # $2.00 / share
+TAKE_PROFIT_DOLLARS = TAKE_PROFIT_TICKS * TICK_VALUE_DOLLARS   # $3.00 / share
 
 # ─── Daily Risk Rules ─────────────────────────────────────────────────────────
 MAX_TRADES_PER_DAY = 1       # 1 trade per day (conservative paper-test limit)
@@ -96,7 +96,7 @@ DAILY_LOSS_LIMIT   = -100.0  # stop trading when daily realized P&L hits this
 # ─── Trading Hours (US Eastern Time) ─────────────────────────────────────────
 # Session: 9:30 AM – 11:00 AM ET  (first 90 min — highest QQQ liquidity)
 TRADING_START = (9, 30)    # (hour, minute) in US/Eastern
-TRADING_END   = (11, 0)    # (hour, minute) in US/Eastern
+TRADING_END   = (11, 30)   # (hour, minute) in US/Eastern  ← extended: more time to hit TP
 TIMEZONE      = "US/Eastern"
 
 # ─── News Blackout Dates ──────────────────────────────────────────────────────
