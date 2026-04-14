@@ -68,6 +68,46 @@ _tz      = ZoneInfo(TIMEZONE)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Startup reconciliation — restore state after a crash / redeploy
+# ─────────────────────────────────────────────────────────────────────────────
+
+def reconcile_position():
+    """
+    On startup, check Alpaca for an existing open position and restore
+    _active_trade + RiskManager state so the bot doesn't ignore or
+    double-up on a position that survived a restart.
+    """
+    pos = broker.get_open_position()
+    if pos is None:
+        print("[MAIN] Reconcile: no open position found — starting fresh.")
+        return
+
+    side        = pos["side"]
+    entry_price = pos["entry_price"]
+    stop_price  = risk.get_stop_price(entry_price, side)
+    target_price = risk.get_target_price(entry_price, side)
+
+    print(f"[MAIN] *** Reconcile: found existing {side} position @ {entry_price:.2f} ***")
+    print(f"[MAIN]     Restoring SL={stop_price:.2f}  TP={target_price:.2f}")
+
+    # Restore risk manager state
+    risk.in_trade    = True
+    risk.entry_price = entry_price
+    risk.trade_side  = side
+    risk.trades_today += 1   # count it against today's limit
+
+    # Restore active trade tracking dict
+    _active_trade.update({
+        "open":         True,
+        "trade_id":     0,        # unknown after restart; logging skipped on close
+        "side":         side,
+        "entry_price":  entry_price,
+        "stop_price":   stop_price,
+        "target_price": target_price,
+    })
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Entry helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -357,6 +397,9 @@ def main():
         if not PAPER_TRADING:
             sys.exit(1)
         # In paper mode we can continue without a live connection
+
+    # ── Reconcile any position that survived a restart / redeploy ────────────
+    reconcile_position()
 
     print(f"[MAIN] Risk status: {risk.status_summary()}")
     print(f"[MAIN] Starting main loop.  Press Ctrl-C to stop.\n")

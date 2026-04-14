@@ -312,6 +312,28 @@ class AlpacaBroker:
         except Exception:
             return None
 
+    def get_open_position(self) -> Optional[dict]:
+        """
+        Return the current open position for SYMBOL, or None if flat.
+
+        Returns dict with keys:
+            side        — "Long" or "Short"
+            qty         — number of shares (int)
+            entry_price — average fill price (float)
+        """
+        if not self._connected:
+            return None
+        try:
+            pos = self._trading_client.get_open_position(SYMBOL)
+            side = "Long" if pos.side.value == "long" else "Short"
+            return {
+                "side":        side,
+                "qty":         int(float(pos.qty)),
+                "entry_price": float(pos.avg_entry_price),
+            }
+        except Exception:
+            return None   # 404 = no position; any other error = treat as flat
+
     # ─────────────────────────────────────────────────────────────────────────
     # Internal helpers
     # ─────────────────────────────────────────────────────────────────────────
