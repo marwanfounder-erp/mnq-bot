@@ -1,0 +1,18 @@
+# QQQ/MNQ-Proxy Trading Bot — Python 3.11+ dependencies
+# Install with: pip install -r requirements.txt
+
+# ── Alpaca broker SDK ─────────────────────────────────────────────────────────
+alpaca-py>=0.20.0         # official Alpaca Python SDK (trading + market data)
+
+# ── Core bot ──────────────────────────────────────────────────────────────────
+python-dotenv>=1.0.0      # loads .env file into os.environ at startup
+requests>=2.31.0          # Telegram Bot API calls
+pandas>=2.0.0             # indicator calculations, data manipulation
+numpy>=1.26.0             # RSI / math
+tzdata>=2024.1            # IANA timezone database for zoneinfo on macOS
+
+# ── Backtester ────────────────────────────────────────────────────────────────
+yfinance>=0.2.40          # historical OHLCV data from Yahoo Finance
+
+# ── Streamlit Dashboard ───────────────────────────────────────────────────────
+streamlit>=1.35.0         # web dashboard (run: streamlit run dashboard.py)

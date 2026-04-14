@@ -1,0 +1,390 @@
+#!/usr/bin/env python3
+# =============================================================================
+# main.py — Main loop that orchestrates the entire trading bot
+#
+# Startup sequence:
+#   1. Connect to Tradovate (or skip if PAPER_TRADING)
+#   2. Begin polling loop every POLL_INTERVAL_SECONDS
+#   3. Each iteration:
+#       a. Check RiskManager.can_trade()  → skip if blocked
+#       b. Fetch latest 1-min OHLCV bars
+#       c. Evaluate strategy signals
+#       d. If signal and no open trade → enter position, place SL/TP orders
+#       e. If in trade → check whether SL or TP has been hit
+#       f. At session end → force-close any open position
+#   4. Ctrl-C exits cleanly, printing the daily summary
+#
+# Run:
+#   python main.py
+# =============================================================================
+
+import sys
+import time
+import signal
+import datetime
+import json
+from zoneinfo import ZoneInfo
+
+from config import (
+    PAPER_TRADING,
+    POLL_INTERVAL_SECONDS,
+    TRADING_END,
+    TRADING_START,
+    TIMEZONE,
+    SYMBOL,
+    ORDER_QTY,
+    STATE_FILE,
+    DAILY_LOSS_LIMIT,
+)
+from broker       import AlpacaBroker
+from strategy     import Strategy
+from risk_manager import RiskManager
+from logger       import TradeLogger
+
+# Telegram — optional; silently skipped if unconfigured
+try:
+    import telegram_alerts as _tg
+    _TG = True
+except Exception:
+    _TG = False
+
+
+# ─── Active trade tracking (module-level so the signal handler can access it)─
+_active_trade: dict = {
+    "open":         False,
+    "trade_id":     None,
+    "side":         None,    # "Long" or "Short"
+    "entry_price":  None,
+    "stop_price":   None,
+    "target_price": None,
+}
+
+# ─── Shared singleton objects ─────────────────────────────────────────────────
+broker   = AlpacaBroker()
+strategy = Strategy()
+risk     = RiskManager()
+log      = TradeLogger()
+_tz      = ZoneInfo(TIMEZONE)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Entry helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def open_position(signal: str, current_price: float):
+    """
+    Execute a new position entry.
+
+    Steps:
+        1. Place the entry market order (or simulate in paper mode)
+        2. Compute SL and TP price levels via RiskManager
+        3. Place protective stop and limit orders
+        4. Record the trade in RiskManager and Logger
+        5. Update the _active_trade tracking dict
+    """
+    # Determine action strings for entry and the bracket orders
+    if signal == "LONG":
+        entry_action  = "Buy"
+        stop_action   = "Sell"   # stop-loss exits a long
+        target_action = "Sell"   # take-profit exits a long
+        side          = "Long"
+    else:  # SHORT
+        entry_action  = "Sell"
+        stop_action   = "Buy"    # stop-loss covers a short
+        target_action = "Buy"    # take-profit covers a short
+        side          = "Short"
+
+    # ── Step 1: Entry market order ────────────────────────────────────────────
+    entry_order = broker.place_market_order(entry_action, qty=ORDER_QTY)
+    if entry_order is None:
+        print("[MAIN] Entry order failed — skipping this bar.")
+        return
+
+    # Use the simulated fill price in paper mode, otherwise use API fill
+    fill_price = entry_order.get("fillPrice", current_price)
+
+    # ── Step 2: Compute SL / TP prices ───────────────────────────────────────
+    stop_price   = risk.get_stop_price(fill_price, side)
+    target_price = risk.get_target_price(fill_price, side)
+
+    print(f"[MAIN] Entry: {side} @ {fill_price:.2f}  |  "
+          f"SL: {stop_price:.2f}  |  TP: {target_price:.2f}")
+
+    # ── Step 3: Place bracket orders ─────────────────────────────────────────
+    # Stop-loss order
+    broker.place_stop_order(stop_action, stop_price, qty=ORDER_QTY)
+    # Take-profit (limit) order
+    broker.place_limit_order(target_action, target_price, qty=ORDER_QTY)
+
+    # ── Step 4: Record in RiskManager and Logger ──────────────────────────────
+    risk.record_trade_open(fill_price, side)
+
+    indicator_snapshot = strategy.last_values
+    trade_id = log.open_trade(
+        side        = side,
+        entry_price = fill_price,
+        indicators  = {
+            "ema_fast": indicator_snapshot.get("ema_fast", 0.0),
+            "ema_slow": indicator_snapshot.get("ema_slow", 0.0),
+            "rsi":      indicator_snapshot.get("rsi", 0.0),
+        },
+        paper = PAPER_TRADING,
+    )
+
+    # ── Step 5: Update tracking state ────────────────────────────────────────
+    _active_trade.update({
+        "open":         True,
+        "trade_id":     trade_id,
+        "side":         side,
+        "entry_price":  fill_price,
+        "stop_price":   stop_price,
+        "target_price": target_price,
+    })
+
+    # ── Step 6: Telegram alert — full detail including SL/TP ─────────────────
+    if _TG:
+        try:
+            indicator_snap = strategy.last_values
+            _tg.alert_trade_opened(
+                trade_id     = trade_id,
+                side         = side,
+                entry_price  = fill_price,
+                stop_price   = stop_price,
+                target_price = target_price,
+                indicators   = {
+                    "ema_fast": indicator_snap.get("ema_fast", 0.0),
+                    "ema_slow": indicator_snap.get("ema_slow", 0.0),
+                    "rsi":      indicator_snap.get("rsi", 0.0),
+                },
+            )
+        except Exception:
+            pass
+
+
+def close_position(reason: str, exit_price: float):
+    """
+    Close the open position and record the result.
+
+    reason — "STOP" | "TARGET" | "SESSION_END" | "MANUAL"
+    """
+    if not _active_trade["open"]:
+        return
+
+    # Cancel any remaining SL/TP bracket orders
+    broker.cancel_all_orders()
+
+    # Market-close the position
+    broker.close_position()
+
+    # Record in RiskManager
+    risk.record_trade_close(_active_trade["exit_price"]
+                             if "exit_price" in _active_trade
+                             else exit_price)
+
+    # Flush to CSV log
+    log.close_trade(
+        trade_id    = _active_trade["trade_id"],
+        exit_price  = exit_price,
+        exit_reason = reason,
+        daily_pnl   = risk.daily_pnl,
+    )
+
+    # Reset tracking state
+    _active_trade.update({
+        "open":         False,
+        "trade_id":     None,
+        "side":         None,
+        "entry_price":  None,
+        "stop_price":   None,
+        "target_price": None,
+    })
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main loop iteration
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run_iteration():
+    """
+    Execute one full cycle of the trading loop:
+        • If in a trade: check for SL/TP hit or session-end exit
+        • If flat: check for new entry signal
+    """
+    now = datetime.datetime.now(tz=_tz)
+
+    # ── Force-close at session end ────────────────────────────────────────────
+    session_end = now.replace(hour=TRADING_END[0], minute=TRADING_END[1],
+                               second=0, microsecond=0)
+    if _active_trade["open"] and now >= session_end:
+        print(f"[MAIN] Session end ({TRADING_END[0]:02d}:{TRADING_END[1]:02d} ET) "
+              "— force-closing position.")
+        current_price = broker.get_current_price() or _active_trade["entry_price"]
+        close_position("SESSION_END", current_price)
+        return
+
+    # ── If currently in a trade: monitor for SL/TP ───────────────────────────
+    if _active_trade["open"]:
+        current_price = broker.get_current_price()
+        if current_price is None:
+            print("[MAIN] Could not get current price — skipping exit check.")
+            return
+
+        exit_reason = strategy.check_exit(
+            current_price = current_price,
+            stop_price    = _active_trade["stop_price"],
+            target_price  = _active_trade["target_price"],
+            side          = _active_trade["side"],
+        )
+
+        if exit_reason:
+            close_position(exit_reason, current_price)
+        return   # don't look for new entries while in a trade
+
+    # ── Flat: check whether we're allowed to look for a signal ───────────────
+    if not risk.can_trade():
+        return   # RiskManager printed the reason if relevant
+
+    # ── Fetch bars and evaluate strategy ─────────────────────────────────────
+    bars = broker.fetch_bars()
+    if bars.empty:
+        print("[MAIN] No bar data returned — skipping this iteration.")
+        return
+
+    signal = strategy.evaluate(bars)
+
+    if signal in ("LONG", "SHORT"):
+        # Use the last close as the approximate market price
+        current_price = bars["close"].iloc[-1]
+        open_position(signal, current_price)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Graceful shutdown
+# ─────────────────────────────────────────────────────────────────────────────
+
+def write_state():
+    """
+    Write a lightweight JSON snapshot of the current bot state to STATE_FILE.
+    The Streamlit dashboard reads this file each refresh cycle.
+    Written after every run_iteration() call — failures are silently ignored.
+    """
+    now = datetime.datetime.now(tz=_tz)
+    session_start = now.replace(hour=TRADING_START[0], minute=TRADING_START[1],
+                                second=0, microsecond=0)
+    session_end   = now.replace(hour=TRADING_END[0],   minute=TRADING_END[1],
+                                second=0, microsecond=0)
+
+    state = {
+        "timestamp":      now.isoformat(),
+        "last_price":     broker.get_current_price(),
+        "in_trade":       _active_trade["open"],
+        "position_side":  _active_trade.get("side"),
+        "entry_price":    _active_trade.get("entry_price"),
+        "stop_price":     _active_trade.get("stop_price"),
+        "target_price":   _active_trade.get("target_price"),
+        "daily_pnl":      risk.daily_pnl,
+        "trades_today":   risk.trades_today,
+        "trading_halted": risk.trading_halted,
+        "session_active": session_start <= now <= session_end,
+        "indicators":     {
+            k: (float(v) if hasattr(v, "__float__") else v)
+            for k, v in strategy.last_values.items()
+            if k in ("ema_fast", "ema_slow", "rsi", "close")
+        },
+    }
+
+    try:
+        with open(STATE_FILE, "w") as f:
+            json.dump(state, f, indent=2, default=str)
+    except OSError:
+        pass   # disk write errors must never halt trading
+
+
+def shutdown(signum=None, frame=None):
+    """Handle Ctrl-C or SIGTERM: close any open position and print summary."""
+    print("\n[MAIN] Shutdown signal received — cleaning up…")
+
+    if _active_trade["open"]:
+        print("[MAIN] Open position detected — closing before exit.")
+        current_price = broker.get_current_price() or _active_trade["entry_price"]
+        close_position("MANUAL", current_price)
+
+    # Send Telegram shutdown + daily summary alerts
+    if _TG:
+        try:
+            _tg.alert_bot_stopped()
+            # Build summary from risk manager state
+            _tg.alert_daily_summary(
+                date_str   = datetime.datetime.now(tz=_tz).date().isoformat(),
+                num_trades = risk.trades_today,
+                num_wins   = 0,   # approximate — full win count needs CSV parse
+                total_pnl  = risk.daily_pnl,
+            )
+        except Exception:
+            pass
+
+    log.print_daily_summary()
+    print("[MAIN] Bot stopped.")
+    sys.exit(0)
+
+
+# Register signal handlers so Ctrl-C exits cleanly
+signal.signal(signal.SIGINT,  shutdown)
+signal.signal(signal.SIGTERM, shutdown)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Entry point
+# ─────────────────────────────────────────────────────────────────────────────
+
+def main():
+    # ── Startup banner ────────────────────────────────────────────────────────
+    mode_label = "PAPER TRADING" if PAPER_TRADING else "*** LIVE TRADING ***"
+    print(
+        f"\n{'#' * 60}\n"
+        f"  QQQ / MNQ-Proxy Trading Bot (Alpaca)\n"
+        f"  Symbol:  {SYMBOL}\n"
+        f"  Mode:    {mode_label}\n"
+        f"  Poll:    every {POLL_INTERVAL_SECONDS}s\n"
+        f"  Session: {TRADING_END[0] - (TRADING_END[0] - 9):02d}:30 – "
+        f"{TRADING_END[0]:02d}:{TRADING_END[1]:02d} ET\n"
+        f"{'#' * 60}\n"
+    )
+
+    # ── Connect to broker ─────────────────────────────────────────────────────
+    if not broker.connect():
+        print("[MAIN] Failed to connect to Alpaca. Check .env credentials.")
+        if not PAPER_TRADING:
+            sys.exit(1)
+        # In paper mode we can continue without a live connection
+
+    print(f"[MAIN] Risk status: {risk.status_summary()}")
+    print(f"[MAIN] Starting main loop.  Press Ctrl-C to stop.\n")
+
+    # Notify Telegram that the bot is live
+    if _TG:
+        try:
+            _tg.alert_bot_started()
+        except Exception:
+            pass
+
+    # ── Polling loop ──────────────────────────────────────────────────────────
+    while True:
+        try:
+            run_iteration()
+        except KeyboardInterrupt:
+            shutdown()
+        except Exception as exc:
+            # Log unexpected errors but keep running — resilience is critical
+            print(f"[MAIN] Unhandled error in run_iteration: {exc}")
+            import traceback
+            traceback.print_exc()
+
+        # Write state snapshot for the dashboard after every iteration
+        write_state()
+
+        time.sleep(POLL_INTERVAL_SECONDS)
+
+
+if __name__ == "__main__":
+    main()

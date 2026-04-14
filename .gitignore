@@ -1,0 +1,17 @@
+# Secrets — never commit these
+.env
+
+# Bot runtime files
+trades.csv
+backtest_results.csv
+bot_state.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+
+# macOS
+.DS_Store
