@@ -224,7 +224,7 @@ def alert_bot_started() -> bool:
         f"🤖 <b>MNQ Bot Started</b>\n"
         f"Mode:    {mode}\n"
         f"Symbol:  {SYMBOL}\n"
-        f"Session: 09:30–11:00 ET\n"
+        f"Session: 09:30–11:30 ET\n"
         f"<i>{datetime.now(tz=_TZ).strftime('%Y-%m-%d %H:%M:%S ET')}</i>"
     )
     return send_message(text)
