@@ -96,10 +96,19 @@ def reconcile_position():
     risk.trade_side  = side
     risk.trades_today += 1   # count it against today's limit
 
+    # Register trade in the logger so close_trade() can write to CSV on exit
+    trade_id = log.open_trade(
+        side        = side,
+        entry_price = entry_price,
+        indicators  = {},
+        paper       = PAPER_TRADING,
+    )
+    print(f"[MAIN]     Reconciled trade logged as id #{trade_id}")
+
     # Restore active trade tracking dict
     _active_trade.update({
         "open":         True,
-        "trade_id":     0,        # unknown after restart; logging skipped on close
+        "trade_id":     trade_id,
         "side":         side,
         "entry_price":  entry_price,
         "stop_price":   stop_price,
