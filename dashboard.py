@@ -146,10 +146,10 @@ def render_header(state: dict):
     st.divider()
 
 
-def render_kpi_row(state: dict, today_trades: pd.DataFrame):
+def render_kpi_row(state: dict, today_trades: pd.DataFrame, all_trades: pd.DataFrame):
     """
-    Four top-level KPI cards:
-        Daily P&L  |  Drawdown %  |  Session  |  Trades taken
+    Five top-level KPI cards:
+        Daily P&L  |  Drawdown %  |  Session  |  Trades taken  |  All-Time P&L
     """
     # Compute values
     daily_pnl    = state.get("daily_pnl", 0.0)
@@ -165,7 +165,16 @@ def render_kpi_row(state: dict, today_trades: pd.DataFrame):
     drawdown_pct = (abs(min(daily_pnl, 0)) / abs(DAILY_LOSS_LIMIT)) * 100
     drawdown_pct = min(drawdown_pct, 100.0)
 
-    col1, col2, col3, col4 = st.columns(4)
+    # All-time P&L across every closed trade in the CSV
+    if not all_trades.empty and "pnl_dollars" in all_trades.columns:
+        closed_all   = all_trades[all_trades["pnl_dollars"].notna()]
+        alltime_pnl  = closed_all["pnl_dollars"].sum()
+        alltime_trades = len(closed_all)
+    else:
+        alltime_pnl    = 0.0
+        alltime_trades = 0
+
+    col1, col2, col3, col4, col5 = st.columns(5)
 
     with col1:
         st.metric(
@@ -175,7 +184,6 @@ def render_kpi_row(state: dict, today_trades: pd.DataFrame):
         )
 
     with col2:
-        dd_color = "normal" if drawdown_pct < 50 else ("off" if drawdown_pct < 80 else "inverse")
         st.metric(
             label="Drawdown vs Limit",
             value=f"{drawdown_pct:.1f}%",
@@ -196,6 +204,14 @@ def render_kpi_row(state: dict, today_trades: pd.DataFrame):
         st.metric(label="Trades Today",
                   value=f"{trades_count} / 1{halt_note}",
                   delta="In position" if in_trade else "Flat")
+
+    with col5:
+        st.metric(
+            label="All-Time P&L",
+            value=_pnl_delta_str(alltime_pnl),
+            delta=f"{alltime_trades} closed trade{'s' if alltime_trades != 1 else ''}",
+            delta_color="off",
+        )
 
 
 def render_position_card(state: dict):
@@ -389,7 +405,7 @@ def main():
     render_header(state)
 
     # ── KPI cards ─────────────────────────────────────────────────────────────
-    render_kpi_row(state, today_trades)
+    render_kpi_row(state, today_trades, all_trades)
     st.divider()
 
     # ── Drawdown meter ────────────────────────────────────────────────────────
