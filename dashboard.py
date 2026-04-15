@@ -33,7 +33,18 @@ from config import (
     PAPER_TRADING,
     TRADING_START,
     TRADING_END,
+    SUPABASE_URL,
+    SUPABASE_KEY,
 )
+
+# ─── Supabase client (optional) ───────────────────────────────────────────────
+_sb = None
+try:
+    if SUPABASE_URL and SUPABASE_KEY:
+        from supabase import create_client as _create_client
+        _sb = _create_client(SUPABASE_URL, SUPABASE_KEY)
+except Exception:
+    pass
 
 _TZ = ZoneInfo(TIMEZONE)
 
@@ -103,6 +114,32 @@ def load_trades() -> pd.DataFrame:
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=DASHBOARD_REFRESH_SECONDS)
+def load_trades_from_supabase() -> pd.DataFrame:
+    """
+    Fetch all closed trades from Supabase.
+    Falls back to empty DataFrame if Supabase is unavailable.
+    """
+    if _sb is None:
+        return pd.DataFrame()
+    try:
+        response = _sb.table("trades").select(
+            "trade_id,symbol,side,entry_price,exit_price,"
+            "entry_time,exit_time,exit_reason,pnl_dollars,daily_pnl,paper_trade"
+        ).not_.is_("exit_price", "null").execute()
+
+        if not response.data:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(response.data)
+        for col in ("entry_price", "exit_price", "pnl_dollars", "daily_pnl"):
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
 def today_str() -> str:
     return datetime.datetime.now(tz=_TZ).date().isoformat()
 
@@ -165,10 +202,14 @@ def render_kpi_row(state: dict, today_trades: pd.DataFrame, all_trades: pd.DataF
     drawdown_pct = (abs(min(daily_pnl, 0)) / abs(DAILY_LOSS_LIMIT)) * 100
     drawdown_pct = min(drawdown_pct, 100.0)
 
-    # All-time P&L across every closed trade in the CSV
-    if not all_trades.empty and "pnl_dollars" in all_trades.columns:
-        closed_all   = all_trades[all_trades["pnl_dollars"].notna()]
-        alltime_pnl  = closed_all["pnl_dollars"].sum()
+    # All-time P&L — prefer Supabase (full history), fall back to CSV
+    sb_trades = load_trades_from_supabase()
+    if not sb_trades.empty and "pnl_dollars" in sb_trades.columns:
+        alltime_pnl    = sb_trades["pnl_dollars"].sum()
+        alltime_trades = len(sb_trades)
+    elif not all_trades.empty and "pnl_dollars" in all_trades.columns:
+        closed_all     = all_trades[all_trades["pnl_dollars"].notna()]
+        alltime_pnl    = closed_all["pnl_dollars"].sum()
         alltime_trades = len(closed_all)
     else:
         alltime_pnl    = 0.0
