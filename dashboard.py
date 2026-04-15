@@ -113,31 +113,6 @@ def filter_today(df: pd.DataFrame) -> pd.DataFrame:
     return df[df["date"] == today_str()].copy()
 
 
-def _closed(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty or "pnl_dollars" not in df.columns:
-        return pd.DataFrame()
-    return df[df["pnl_dollars"].notna()].copy()
-
-
-def _week_pnl(df: pd.DataFrame) -> float:
-    c = _closed(df)
-    if c.empty:
-        return 0.0
-    now = datetime.datetime.now(tz=_TZ).date()
-    week_start = now - datetime.timedelta(days=now.weekday())
-    dates = pd.to_datetime(c["date"]).dt.date
-    return float(c.loc[(dates >= week_start) & (dates <= now), "pnl_dollars"].sum())
-
-
-def _month_pnl(df: pd.DataFrame) -> float:
-    c = _closed(df)
-    if c.empty:
-        return 0.0
-    now = datetime.datetime.now(tz=_TZ)
-    d = pd.to_datetime(c["date"])
-    return float(c.loc[(d.dt.year == now.year) & (d.dt.month == now.month), "pnl_dollars"].sum())
-
-
 # =============================================================================
 # Layout helpers
 # =============================================================================
@@ -348,197 +323,6 @@ def render_todays_trades(today_trades: pd.DataFrame):
     )
 
 
-def render_period_pnl(all_trades: pd.DataFrame):
-    """Week P&L and Month P&L side by side."""
-    week_pnl  = _week_pnl(all_trades)
-    month_pnl = _month_pnl(all_trades)
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric("This Week P&L",  _pnl_delta_str(week_pnl))
-    with col2:
-        st.metric("This Month P&L", _pnl_delta_str(month_pnl))
-
-
-def render_pnl_calendar(all_trades: pd.DataFrame):
-    """Calendar heatmap: daily P&L cells, weekly row totals, monthly total."""
-    import calendar as cal_mod
-    import streamlit.components.v1 as components
-
-    st.subheader("P&L Calendar")
-
-    c = _closed(all_trades)
-    daily_pnl: dict = {}
-    if not c.empty and "date" in c.columns:
-        c["_d"] = c["date"].astype(str).str[:10]
-        daily_pnl = c.groupby("_d")["pnl_dollars"].sum().to_dict()
-
-    now = datetime.datetime.now(tz=_TZ)
-
-    # Month selector: all months with data + current month
-    month_opts = sorted(
-        {d[:7] for d in daily_pnl} | {now.strftime("%Y-%m")},
-        reverse=True,
-    )
-    col_sel, _ = st.columns([1, 4])
-    with col_sel:
-        selected = st.selectbox("Month", options=month_opts, index=0,
-                                label_visibility="collapsed")
-
-    year      = int(selected[:4])
-    month     = int(selected[5:7])
-    weeks     = cal_mod.monthcalendar(year, month)
-    month_lbl = datetime.date(year, month, 1).strftime("%B %Y")
-    today_iso = now.date().isoformat()
-
-    # ── Cells ──────────────────────────────────────────────────────────────
-    DAY_NAMES = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
-
-    header_cells = "".join(
-        f'<th style="color:#9ca3af;font-size:12px;font-weight:600;'
-        f'padding:8px 4px;text-align:center;letter-spacing:.05em">{d}</th>'
-        for d in DAY_NAMES
-    )
-    header_cells += (
-        '<th style="color:#9ca3af;font-size:12px;font-weight:600;'
-        'padding:8px 12px;text-align:center;border-left:1px solid #374151;'
-        'letter-spacing:.05em">WEEK</th>'
-    )
-
-    rows_html   = ""
-    month_total = 0.0
-
-    for week in weeks:
-        row   = ""
-        wk_t  = 0.0
-        valid = False
-
-        for day in week:
-            if day == 0:
-                row += (
-                    '<td style="padding:10px 4px;text-align:center;'
-                    'border-radius:6px;background:#111827"></td>'
-                )
-                continue
-
-            valid  = True
-            ds     = f"{year:04d}-{month:02d}-{day:02d}"
-            pnl    = daily_pnl.get(ds)
-            today  = ds == today_iso
-            ring   = "box-shadow:0 0 0 2px #3b82f6;" if today else ""
-
-            if pnl is not None:
-                wk_t        += pnl
-                month_total += pnl
-                color = "#4ade80" if pnl >= 0 else "#f87171"
-                bg    = "rgba(74,222,128,0.15)" if pnl >= 0 else "rgba(248,113,113,0.15)"
-                sign  = "+" if pnl >= 0 else ""
-                row += (
-                    f'<td style="padding:10px 6px;text-align:center;border-radius:6px;'
-                    f'background:{bg};{ring}">'
-                    f'<div style="color:#6b7280;font-size:11px;margin-bottom:4px">{day}</div>'
-                    f'<div style="color:{color};font-size:15px;font-weight:700;line-height:1">'
-                    f'{sign}${pnl:.0f}</div>'
-                    f'</td>'
-                )
-            else:
-                row += (
-                    f'<td style="padding:10px 6px;text-align:center;border-radius:6px;'
-                    f'background:#1f2937;{ring}">'
-                    f'<div style="color:#4b5563;font-size:11px;margin-bottom:4px">{day}</div>'
-                    f'<div style="color:#374151;font-size:14px">—</div>'
-                    f'</td>'
-                )
-
-        # Week total
-        if valid:
-            if wk_t != 0:
-                wc    = "#4ade80" if wk_t >= 0 else "#f87171"
-                wsign = "+" if wk_t >= 0 else ""
-                row += (
-                    f'<td style="padding:10px 12px;text-align:center;font-weight:700;'
-                    f'font-size:15px;color:{wc};border-left:1px solid #374151">'
-                    f'{wsign}${wk_t:.0f}</td>'
-                )
-            else:
-                row += (
-                    '<td style="padding:10px 12px;text-align:center;color:#374151;'
-                    'border-left:1px solid #374151">—</td>'
-                )
-        rows_html += f"<tr>{row}</tr>"
-
-    # Month total footer
-    mc    = "#4ade80" if month_total >= 0 else "#f87171"
-    msign = "+" if month_total >= 0 else ""
-    no_data_note = (
-        '<tr><td colspan="8" style="padding:16px;text-align:center;'
-        'color:#6b7280;font-size:13px;border-top:1px solid #374151">'
-        'No trades recorded yet — trades appear here once the bot closes a position.</td></tr>'
-        if not daily_pnl else ""
-    )
-    footer = (
-        f'<tr>'
-        f'<td colspan="7" style="padding:10px 8px;text-align:right;color:#6b7280;'
-        f'font-size:12px;border-top:1px solid #374151">Month Total</td>'
-        f'<td style="padding:10px 12px;text-align:center;font-weight:700;font-size:17px;'
-        f'color:{mc};border-left:1px solid #374151;border-top:1px solid #374151">'
-        f'{msign}${month_total:.0f}</td>'
-        f'</tr>'
-    )
-
-    n_weeks    = len(weeks)
-    cal_height = 46 + n_weeks * 64 + 50 + (40 if not daily_pnl else 0)
-
-    html = f"""
-<!DOCTYPE html>
-<html>
-<head>
-<style>
-  body {{
-    margin: 0; padding: 0;
-    background: transparent;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  }}
-  .cal-wrap {{
-    width: 100%;
-    background: #111827;
-    border-radius: 10px;
-    overflow: hidden;
-    border: 1px solid #1f2937;
-  }}
-  .cal-title {{
-    padding: 12px 16px 0;
-    color: #e5e7eb;
-    font-size: 14px;
-    font-weight: 600;
-    letter-spacing: .03em;
-  }}
-  table {{
-    border-collapse: separate;
-    border-spacing: 4px;
-    width: 100%;
-    padding: 8px;
-    box-sizing: border-box;
-  }}
-</style>
-</head>
-<body>
-<div class="cal-wrap">
-  <div class="cal-title">{month_lbl}</div>
-  <table>
-    <thead><tr>{header_cells}</tr></thead>
-    <tbody>
-      {rows_html}
-      {no_data_note}
-      {footer}
-    </tbody>
-  </table>
-</div>
-</body>
-</html>
-"""
-    components.html(html, height=cal_height, scrolling=False)
-
-
 def render_equity_curve(all_trades: pd.DataFrame):
     """Cumulative P&L line chart across all historical trades."""
     st.subheader("Equity Curve (All Time)")
@@ -606,7 +390,6 @@ def main():
 
     # ── KPI cards ─────────────────────────────────────────────────────────────
     render_kpi_row(state, today_trades)
-    render_period_pnl(all_trades)
     st.divider()
 
     # ── Drawdown meter ────────────────────────────────────────────────────────
@@ -624,10 +407,6 @@ def main():
 
     # ── Today's trades ────────────────────────────────────────────────────────
     render_todays_trades(today_trades)
-    st.divider()
-
-    # ── P&L Calendar ──────────────────────────────────────────────────────────
-    render_pnl_calendar(all_trades)
     st.divider()
 
     # ── Historical equity curve ───────────────────────────────────────────────
