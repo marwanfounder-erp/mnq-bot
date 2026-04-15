@@ -16,3 +16,6 @@ yfinance>=0.2.40          # historical OHLCV data from Yahoo Finance
 
 # ── Streamlit Dashboard ───────────────────────────────────────────────────────
 streamlit>=1.35.0         # web dashboard (run: streamlit run dashboard.py)
+
+# ── Supabase ──────────────────────────────────────────────────────────────────
+supabase>=2.0.0           # Supabase Python client (optional — CSV is the backup)

@@ -98,10 +98,12 @@ def reconcile_position():
 
     # Register trade in the logger so close_trade() can write to CSV on exit
     trade_id = log.open_trade(
-        side        = side,
-        entry_price = entry_price,
-        indicators  = {},
-        paper       = PAPER_TRADING,
+        side         = side,
+        entry_price  = entry_price,
+        indicators   = {},
+        paper        = PAPER_TRADING,
+        stop_price   = stop_price,
+        target_price = target_price,
     )
     print(f"[MAIN]     Reconciled trade logged as id #{trade_id}")
 
@@ -170,14 +172,16 @@ def open_position(signal: str, current_price: float):
 
     indicator_snapshot = strategy.last_values
     trade_id = log.open_trade(
-        side        = side,
-        entry_price = fill_price,
-        indicators  = {
+        side         = side,
+        entry_price  = fill_price,
+        indicators   = {
             "ema_fast": indicator_snapshot.get("ema_fast", 0.0),
             "ema_slow": indicator_snapshot.get("ema_slow", 0.0),
             "rsi":      indicator_snapshot.get("rsi", 0.0),
         },
-        paper = PAPER_TRADING,
+        paper        = PAPER_TRADING,
+        stop_price   = stop_price,
+        target_price = target_price,
     )
 
     # ── Step 5: Update tracking state ────────────────────────────────────────

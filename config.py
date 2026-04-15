@@ -42,6 +42,11 @@ ALPACA_API_KEY    = _env("ALPACA_API_KEY")
 ALPACA_SECRET_KEY = _env("ALPACA_SECRET_KEY")
 ALPACA_BASE_URL   = _env("ALPACA_BASE_URL", "https://paper-api.alpaca.markets/v2")
 
+# ─── Supabase Credentials ─────────────────────────────────────────────────────
+# Optional — if not set, Supabase logging is silently skipped.
+SUPABASE_URL = _env("SUPABASE_URL")
+SUPABASE_KEY = _env("SUPABASE_KEY")
+
 # ─── Environment Flags ────────────────────────────────────────────────────────
 PAPER_TRADING = _env_bool("PAPER_TRADING", default=True)
 

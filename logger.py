@@ -14,7 +14,7 @@ import datetime
 from typing import Optional, Dict, Any
 from zoneinfo import ZoneInfo
 
-from config import LOG_FILE, LOG_TO_CONSOLE, TIMEZONE, SYMBOL, ORDER_QTY, PAPER_TRADING, TICK_SIZE, TICK_VALUE_DOLLARS
+from config import LOG_FILE, LOG_TO_CONSOLE, TIMEZONE, SYMBOL, ORDER_QTY, PAPER_TRADING, TICK_SIZE, TICK_VALUE_DOLLARS, SUPABASE_URL, SUPABASE_KEY
 
 # Import Telegram alerts — wrapped in try/except so the bot still works
 # even if telegram_alerts.py has a bad import (e.g. requests not installed).
@@ -23,6 +23,18 @@ try:
     _TG_AVAILABLE = True
 except Exception:
     _TG_AVAILABLE = False
+
+# Import Supabase — optional; CSV logging continues if not installed/configured.
+_supabase_client = None
+try:
+    if SUPABASE_URL and SUPABASE_KEY:
+        from supabase import create_client
+        _supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        print("[LOGGER] Supabase connected.")
+    else:
+        print("[LOGGER] Supabase not configured — CSV-only logging.")
+except Exception as _e:
+    print(f"[LOGGER] Supabase init failed ({_e}) — CSV-only logging.")
 
 
 # Column order for the CSV trade journal
@@ -74,19 +86,23 @@ class TradeLogger:
 
     def open_trade(
         self,
-        side:        str,
-        entry_price: float,
-        indicators:  Optional[Dict[str, float]] = None,
-        paper:       bool = True,
+        side:         str,
+        entry_price:  float,
+        indicators:   Optional[Dict[str, float]] = None,
+        paper:        bool = True,
+        stop_price:   Optional[float] = None,
+        target_price: Optional[float] = None,
     ) -> int:
         """
         Record a new trade opening.  Returns the trade_id.
 
         Args:
-            side:        "Long" or "Short"
-            entry_price: fill price
-            indicators:  dict with keys ema_fast, ema_slow, rsi (at entry bar)
-            paper:       True for paper trade, False for live
+            side:         "Long" or "Short"
+            entry_price:  fill price
+            indicators:   dict with keys ema_fast, ema_slow, rsi (at entry bar)
+            paper:        True for paper trade, False for live
+            stop_price:   stop-loss price level
+            target_price: take-profit price level
 
         Returns:
             trade_id (int) — pass this to close_trade()
@@ -105,6 +121,8 @@ class TradeLogger:
             "qty":         ORDER_QTY,
             "entry_time":  now.strftime("%H:%M:%S"),
             "entry_price": entry_price,
+            "stop_price":  stop_price,
+            "target_price": target_price,
             "exit_time":   "",
             "exit_price":  "",
             "exit_reason": "",
@@ -118,6 +136,27 @@ class TradeLogger:
         }
 
         self._open_trades[tid] = trade
+
+        # ── Supabase insert (open trade row) ──────────────────────────────────
+        if _supabase_client is not None:
+            try:
+                _supabase_client.table("trades").insert({
+                    "trade_id":     tid,
+                    "symbol":       SYMBOL,
+                    "side":         side,
+                    "entry_price":  entry_price,
+                    "stop_price":   stop_price,
+                    "target_price": target_price,
+                    "entry_time":   now.isoformat(),
+                    "paper_trade":  paper,
+                    "indicators": {
+                        "ema_fast": indicators.get("ema_fast"),
+                        "ema_slow": indicators.get("ema_slow"),
+                        "rsi":      indicators.get("rsi"),
+                    },
+                }).execute()
+            except Exception as _e:
+                print(f"[LOGGER] Supabase open_trade insert failed: {_e}")
 
         # ── Telegram alert ────────────────────────────────────────────────────
         if _TG_AVAILABLE:
@@ -188,6 +227,19 @@ class TradeLogger:
 
         # ── Write row to CSV ──────────────────────────────────────────────────
         self._append_to_csv(trade)
+
+        # ── Supabase update (close trade row) ─────────────────────────────────
+        if _supabase_client is not None:
+            try:
+                _supabase_client.table("trades").update({
+                    "exit_price":  exit_price,
+                    "exit_time":   now.isoformat(),
+                    "exit_reason": exit_reason,
+                    "pnl_dollars": round(dollar_pnl, 2),
+                    "daily_pnl":   round(daily_pnl, 2),
+                }).eq("trade_id", trade_id).execute()
+            except Exception as _e:
+                print(f"[LOGGER] Supabase close_trade update failed: {_e}")
 
         # ── Telegram alert ────────────────────────────────────────────────────
         if _TG_AVAILABLE:
