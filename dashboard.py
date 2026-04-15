@@ -362,6 +362,7 @@ def render_period_pnl(all_trades: pd.DataFrame):
 def render_pnl_calendar(all_trades: pd.DataFrame):
     """Calendar heatmap: daily P&L cells, weekly row totals, monthly total."""
     import calendar as cal_mod
+    import streamlit.components.v1 as components
 
     st.subheader("P&L Calendar")
 
@@ -373,7 +374,7 @@ def render_pnl_calendar(all_trades: pd.DataFrame):
 
     now = datetime.datetime.now(tz=_TZ)
 
-    # Build month selector from months that have data + current month
+    # Month selector: all months with data + current month
     month_opts = sorted(
         {d[:7] for d in daily_pnl} | {now.strftime("%Y-%m")},
         reverse=True,
@@ -383,96 +384,159 @@ def render_pnl_calendar(all_trades: pd.DataFrame):
         selected = st.selectbox("Month", options=month_opts, index=0,
                                 label_visibility="collapsed")
 
-    year  = int(selected[:4])
-    month = int(selected[5:7])
-    weeks = cal_mod.monthcalendar(year, month)
-    month_label = datetime.date(year, month, 1).strftime("%B %Y")
-    today_iso   = now.date().isoformat()
+    year      = int(selected[:4])
+    month     = int(selected[5:7])
+    weeks     = cal_mod.monthcalendar(year, month)
+    month_lbl = datetime.date(year, month, 1).strftime("%B %Y")
+    today_iso = now.date().isoformat()
 
-    st.caption(month_label)
+    # ── Cells ──────────────────────────────────────────────────────────────
+    DAY_NAMES = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
 
-    # ── Build HTML calendar table ──────────────────────────────────────────
-    html = """
-<style>
-.pnl-cal{border-collapse:collapse;width:100%;margin-top:6px}
-.pnl-cal th{color:#888;padding:5px 4px;text-align:center;font-size:11px;font-weight:600}
-.pnl-cal .wk-sep{border-left:1px solid #2d2d2d}
-.pnl-cal td{padding:6px 3px;text-align:center;min-width:56px;border-radius:5px}
-</style>
-<table class="pnl-cal">
-<tr>
-  <th>MON</th><th>TUE</th><th>WED</th>
-  <th>THU</th><th>FRI</th><th>SAT</th><th>SUN</th>
-  <th class="wk-sep">WEEK</th>
-</tr>
-"""
+    header_cells = "".join(
+        f'<th style="color:#9ca3af;font-size:12px;font-weight:600;'
+        f'padding:8px 4px;text-align:center;letter-spacing:.05em">{d}</th>'
+        for d in DAY_NAMES
+    )
+    header_cells += (
+        '<th style="color:#9ca3af;font-size:12px;font-weight:600;'
+        'padding:8px 12px;text-align:center;border-left:1px solid #374151;'
+        'letter-spacing:.05em">WEEK</th>'
+    )
 
+    rows_html   = ""
     month_total = 0.0
 
     for week in weeks:
-        html += "<tr>"
-        week_total = 0.0
-        has_day    = False
+        row   = ""
+        wk_t  = 0.0
+        valid = False
 
         for day in week:
             if day == 0:
-                html += '<td style="color:#2d2d2d">—</td>'
+                row += (
+                    '<td style="padding:10px 4px;text-align:center;'
+                    'border-radius:6px;background:#111827"></td>'
+                )
                 continue
 
-            has_day  = True
-            dt_str   = f"{year:04d}-{month:02d}-{day:02d}"
-            pnl      = daily_pnl.get(dt_str)
-            is_today = dt_str == today_iso
-            outline  = "outline:2px solid #60a5fa;" if is_today else ""
+            valid  = True
+            ds     = f"{year:04d}-{month:02d}-{day:02d}"
+            pnl    = daily_pnl.get(ds)
+            today  = ds == today_iso
+            ring   = "box-shadow:0 0 0 2px #3b82f6;" if today else ""
 
             if pnl is not None:
-                week_total  += pnl
+                wk_t        += pnl
                 month_total += pnl
-                color  = "#22c55e" if pnl >= 0 else "#ef4444"
-                bg     = "rgba(34,197,94,0.13)" if pnl >= 0 else "rgba(239,68,68,0.13)"
-                sign   = "+" if pnl >= 0 else ""
-                html += (
-                    f'<td style="background:{bg};{outline}">'
-                    f'<div style="color:#666;font-size:10px">{day}</div>'
-                    f'<div style="color:{color};font-size:12px;font-weight:700">{sign}${pnl:.0f}</div>'
+                color = "#4ade80" if pnl >= 0 else "#f87171"
+                bg    = "rgba(74,222,128,0.15)" if pnl >= 0 else "rgba(248,113,113,0.15)"
+                sign  = "+" if pnl >= 0 else ""
+                row += (
+                    f'<td style="padding:10px 6px;text-align:center;border-radius:6px;'
+                    f'background:{bg};{ring}">'
+                    f'<div style="color:#6b7280;font-size:11px;margin-bottom:4px">{day}</div>'
+                    f'<div style="color:{color};font-size:15px;font-weight:700;line-height:1">'
+                    f'{sign}${pnl:.0f}</div>'
                     f'</td>'
                 )
             else:
-                html += (
-                    f'<td style="background:#141420;{outline}">'
-                    f'<div style="color:#444;font-size:10px">{day}</div>'
-                    f'<div style="color:#2d2d2d;font-size:12px">—</div>'
+                row += (
+                    f'<td style="padding:10px 6px;text-align:center;border-radius:6px;'
+                    f'background:#1f2937;{ring}">'
+                    f'<div style="color:#4b5563;font-size:11px;margin-bottom:4px">{day}</div>'
+                    f'<div style="color:#374151;font-size:14px">—</div>'
                     f'</td>'
                 )
 
-        # Week total cell
-        if has_day:
-            if week_total != 0:
-                wc   = "#22c55e" if week_total >= 0 else "#ef4444"
-                wsign = "+" if week_total >= 0 else ""
-                html += (
-                    f'<td class="wk-sep" style="color:{wc};font-weight:700;font-size:13px">'
-                    f'{wsign}${week_total:.0f}</td>'
+        # Week total
+        if valid:
+            if wk_t != 0:
+                wc    = "#4ade80" if wk_t >= 0 else "#f87171"
+                wsign = "+" if wk_t >= 0 else ""
+                row += (
+                    f'<td style="padding:10px 12px;text-align:center;font-weight:700;'
+                    f'font-size:15px;color:{wc};border-left:1px solid #374151">'
+                    f'{wsign}${wk_t:.0f}</td>'
                 )
             else:
-                html += '<td class="wk-sep" style="color:#333">—</td>'
+                row += (
+                    '<td style="padding:10px 12px;text-align:center;color:#374151;'
+                    'border-left:1px solid #374151">—</td>'
+                )
+        rows_html += f"<tr>{row}</tr>"
 
-        html += "</tr>"
-
-    # Month total row
-    mc    = "#22c55e" if month_total >= 0 else "#ef4444"
+    # Month total footer
+    mc    = "#4ade80" if month_total >= 0 else "#f87171"
     msign = "+" if month_total >= 0 else ""
-    html += (
-        '<tr>'
-        '<td colspan="7" style="padding:8px 4px;text-align:right;color:#555;'
-        'font-size:11px;border-top:1px solid #2d2d2d">Month Total</td>'
-        f'<td class="wk-sep" style="color:{mc};font-weight:700;font-size:15px;'
-        f'border-top:1px solid #2d2d2d">{msign}${month_total:.0f}</td>'
-        '</tr>'
+    no_data_note = (
+        '<tr><td colspan="8" style="padding:16px;text-align:center;'
+        'color:#6b7280;font-size:13px;border-top:1px solid #374151">'
+        'No trades recorded yet — trades appear here once the bot closes a position.</td></tr>'
+        if not daily_pnl else ""
     )
-    html += "</table>"
+    footer = (
+        f'<tr>'
+        f'<td colspan="7" style="padding:10px 8px;text-align:right;color:#6b7280;'
+        f'font-size:12px;border-top:1px solid #374151">Month Total</td>'
+        f'<td style="padding:10px 12px;text-align:center;font-weight:700;font-size:17px;'
+        f'color:{mc};border-left:1px solid #374151;border-top:1px solid #374151">'
+        f'{msign}${month_total:.0f}</td>'
+        f'</tr>'
+    )
 
-    st.markdown(html, unsafe_allow_html=True)
+    n_weeks    = len(weeks)
+    cal_height = 46 + n_weeks * 64 + 50 + (40 if not daily_pnl else 0)
+
+    html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body {{
+    margin: 0; padding: 0;
+    background: transparent;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }}
+  .cal-wrap {{
+    width: 100%;
+    background: #111827;
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid #1f2937;
+  }}
+  .cal-title {{
+    padding: 12px 16px 0;
+    color: #e5e7eb;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: .03em;
+  }}
+  table {{
+    border-collapse: separate;
+    border-spacing: 4px;
+    width: 100%;
+    padding: 8px;
+    box-sizing: border-box;
+  }}
+</style>
+</head>
+<body>
+<div class="cal-wrap">
+  <div class="cal-title">{month_lbl}</div>
+  <table>
+    <thead><tr>{header_cells}</tr></thead>
+    <tbody>
+      {rows_html}
+      {no_data_note}
+      {footer}
+    </tbody>
+  </table>
+</div>
+</body>
+</html>
+"""
+    components.html(html, height=cal_height, scrolling=False)
 
 
 def render_equity_curve(all_trades: pd.DataFrame):
