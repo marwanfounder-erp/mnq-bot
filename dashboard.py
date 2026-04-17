@@ -71,6 +71,10 @@ st.markdown("""
         border-radius:12px; font-size:12px; font-weight:600; }
     .badge-paper   { background:#f59e0b; color:#fff; padding:2px 10px;
         border-radius:12px; font-size:12px; font-weight:600; }
+    /* Log panel */
+    .log-panel { background:#0e1117; border:1px solid #30363d; border-radius:6px;
+        padding:10px 14px; max-height:220px; overflow-y:auto; }
+    .log-line  { font-family:monospace; font-size:12px; line-height:1.6; white-space:pre; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -432,6 +436,45 @@ def render_win_loss_bars(all_trades: pd.DataFrame):
                  use_container_width=True)
 
 
+def render_recent_logs(state: dict):
+    """Scrollable log panel showing the last 25 bot activity entries."""
+    logs = state.get("recent_logs", [])
+    if not logs:
+        return
+
+    st.subheader("Recent Activity")
+
+    def _line_color(msg: str) -> str:
+        m = msg.lower()
+        if any(k in m for k in ("entry:", "long @", "short @", "opened")):
+            return "#60a5fa"   # blue  — trade entry
+        if any(k in m for k in ("target", "profit", "tp")):
+            return "#22c55e"   # green — take profit
+        if any(k in m for k in ("stop hit", "stop:", "error", "fail", "halted")):
+            return "#ef4444"   # red   — stop / error
+        if any(k in m for k in ("session end", "warn", "reconcil", "force")):
+            return "#f59e0b"   # amber — warnings / session events
+        if any(k in m for k in ("signal", "hold", "strategy")):
+            return "#a78bfa"   # purple — strategy evals
+        return "#6b7280"       # gray  — general info
+
+    lines_html = ""
+    for entry in reversed(logs):   # newest first
+        t   = entry.get("time", "")
+        msg = entry.get("msg", "")
+        col = _line_color(msg)
+        lines_html += (
+            f'<div class="log-line" style="color:{col};">'
+            f'<span style="color:#4b5563;">{t}</span>  {msg}'
+            f'</div>'
+        )
+
+    st.markdown(
+        f'<div class="log-panel">{lines_html}</div>',
+        unsafe_allow_html=True,
+    )
+
+
 # =============================================================================
 # Main dashboard render
 # =============================================================================
@@ -460,6 +503,11 @@ def main():
     # ── Indicators ────────────────────────────────────────────────────────────
     if state:
         render_indicators(state)
+        st.divider()
+
+    # ── Recent activity log ───────────────────────────────────────────────────
+    if state:
+        render_recent_logs(state)
         st.divider()
 
     # ── Today's trades ────────────────────────────────────────────────────────

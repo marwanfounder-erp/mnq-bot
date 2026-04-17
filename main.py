@@ -49,6 +49,19 @@ except Exception:
     _TG = False
 
 
+# ─── In-memory log ring buffer (shared with dashboard via STATE_FILE) ─────────
+_log_buffer: list = []
+_LOG_MAX = 60
+
+def _log(msg: str):
+    """Print to console and append to the rolling log buffer."""
+    print(msg)
+    now_str = datetime.datetime.now(tz=_tz).strftime("%H:%M:%S")
+    _log_buffer.append({"time": now_str, "msg": msg})
+    if len(_log_buffer) > _LOG_MAX:
+        _log_buffer.pop(0)
+
+
 # ─── Active trade tracking (module-level so the signal handler can access it)─
 _active_trade: dict = {
     "open":         False,
@@ -79,7 +92,7 @@ def reconcile_position():
     """
     pos = broker.get_open_position()
     if pos is None:
-        print("[MAIN] Reconcile: no open position found — starting fresh.")
+        _log("[MAIN] Reconcile: no open position found — starting fresh.")
         return
 
     side        = pos["side"]
@@ -87,8 +100,8 @@ def reconcile_position():
     stop_price  = risk.get_stop_price(entry_price, side)
     target_price = risk.get_target_price(entry_price, side)
 
-    print(f"[MAIN] *** Reconcile: found existing {side} position @ {entry_price:.2f} ***")
-    print(f"[MAIN]     Restoring SL={stop_price:.2f}  TP={target_price:.2f}")
+    _log(f"[MAIN] *** Reconcile: found existing {side} position @ {entry_price:.2f} ***")
+    _log(f"[MAIN]     Restoring SL={stop_price:.2f}  TP={target_price:.2f}")
 
     # Restore risk manager state
     risk.in_trade    = True
@@ -105,7 +118,7 @@ def reconcile_position():
         stop_price   = stop_price,
         target_price = target_price,
     )
-    print(f"[MAIN]     Reconciled trade logged as id #{trade_id}")
+    _log(f"[MAIN]     Reconciled trade logged as id #{trade_id}")
 
     # Restore active trade tracking dict
     _active_trade.update({
@@ -148,7 +161,7 @@ def open_position(signal: str, current_price: float):
     # ── Step 1: Entry market order ────────────────────────────────────────────
     entry_order = broker.place_market_order(entry_action, qty=ORDER_QTY)
     if entry_order is None:
-        print("[MAIN] Entry order failed — skipping this bar.")
+        _log("[MAIN] Entry order failed — skipping this bar.")
         return
 
     # Use the simulated fill price in paper mode, otherwise use API fill
@@ -158,8 +171,8 @@ def open_position(signal: str, current_price: float):
     stop_price   = risk.get_stop_price(fill_price, side)
     target_price = risk.get_target_price(fill_price, side)
 
-    print(f"[MAIN] Entry: {side} @ {fill_price:.2f}  |  "
-          f"SL: {stop_price:.2f}  |  TP: {target_price:.2f}")
+    _log(f"[MAIN] Entry: {side} @ {fill_price:.2f}  |  "
+         f"SL: {stop_price:.2f}  |  TP: {target_price:.2f}")
 
     # ── Step 3: Place bracket orders ─────────────────────────────────────────
     # Stop-loss order
@@ -269,8 +282,8 @@ def run_iteration():
     session_end = now.replace(hour=TRADING_END[0], minute=TRADING_END[1],
                                second=0, microsecond=0)
     if _active_trade["open"] and now >= session_end:
-        print(f"[MAIN] Session end ({TRADING_END[0]:02d}:{TRADING_END[1]:02d} ET) "
-              "— force-closing position.")
+        _log(f"[MAIN] Session end ({TRADING_END[0]:02d}:{TRADING_END[1]:02d} ET) "
+             "— force-closing position.")
         current_price = broker.get_current_price() or _active_trade["entry_price"]
         close_position("SESSION_END", current_price)
         return
@@ -279,7 +292,7 @@ def run_iteration():
     if _active_trade["open"]:
         current_price = broker.get_current_price()
         if current_price is None:
-            print("[MAIN] Could not get current price — skipping exit check.")
+            _log("[MAIN] Could not get current price — skipping exit check.")
             return
 
         exit_reason = strategy.check_exit(
@@ -300,7 +313,7 @@ def run_iteration():
     # ── Fetch bars and evaluate strategy ─────────────────────────────────────
     bars = broker.fetch_bars()
     if bars.empty:
-        print("[MAIN] No bar data returned — skipping this iteration.")
+        _log("[MAIN] No bar data returned — skipping this iteration.")
         return
 
     signal = strategy.evaluate(bars)
@@ -344,6 +357,7 @@ def write_state():
             for k, v in strategy.last_values.items()
             if k in ("ema_fast", "ema_slow", "rsi", "close")
         },
+        "recent_logs":    list(_log_buffer[-25:]),
     }
 
     try:
@@ -432,7 +446,7 @@ def main():
             shutdown()
         except Exception as exc:
             # Log unexpected errors but keep running — resilience is critical
-            print(f"[MAIN] Unhandled error in run_iteration: {exc}")
+            _log(f"[MAIN] Unhandled error in run_iteration: {exc}")
             import traceback
             traceback.print_exc()
 
