@@ -71,7 +71,7 @@ EMA_FAST   = 9    # fast EMA period
 EMA_SLOW   = 21   # slow EMA period used as trend filter
 RSI_PERIOD = 14   # RSI lookback
 
-RSI_BUY_THRESHOLD  = 45   # go LONG only when RSI < this (not overbought; QQQ-tuned)
+RSI_BUY_THRESHOLD  = 52   # go LONG only when RSI < this (not overbought; QQQ-tuned)
 RSI_SELL_THRESHOLD = 55   # go SHORT only when RSI > this (not oversold; QQQ-tuned)
 
 BAR_TIMEFRAME = 1    # minutes per bar (1-minute bars)
