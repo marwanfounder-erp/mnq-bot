@@ -433,6 +433,116 @@ def render_win_loss_bars(all_trades: pd.DataFrame):
     st.bar_chart(monthly.set_index("month")[["wins", "losses"]])
 
 
+def render_all_trades_table(all_trades: pd.DataFrame):
+    """
+    Full trade history table with Side and Result filters.
+
+    Prefers Supabase data (complete history); falls back to the CSV DataFrame
+    passed in.  Displays newest trades first.
+    """
+    st.subheader("All Trades")
+
+    # ── Choose data source ────────────────────────────────────────────────────
+    sb = load_trades_from_supabase()
+    if not sb.empty:
+        df = sb.copy()
+        # Derive a plain date string from the ISO entry_time timestamp
+        if "entry_time" in df.columns:
+            df["date"] = pd.to_datetime(df["entry_time"], errors="coerce").dt.date.astype(str)
+        # Supabase doesn't store pnl_ticks — leave column absent
+        source_label = "Supabase"
+    elif not all_trades.empty:
+        df = all_trades[all_trades["pnl_dollars"].notna()].copy()
+        source_label = "CSV"
+    else:
+        st.info("No trade history yet.")
+        return
+
+    if df.empty:
+        st.info("No closed trades found.")
+        return
+
+    # ── Filters row ───────────────────────────────────────────────────────────
+    col_f1, col_f2, col_f3 = st.columns([1, 1, 3])
+
+    with col_f1:
+        side_filter = st.selectbox("Side", ["All", "Long", "Short"],
+                                   key="all_trades_side")
+    with col_f2:
+        result_filter = st.selectbox("Result", ["All", "Win", "Loss"],
+                                     key="all_trades_result")
+    with col_f3:
+        st.caption(f"Source: {source_label}  ·  {len(df)} total closed trades")
+
+    # Apply filters
+    view = df.copy()
+    if side_filter != "All" and "side" in view.columns:
+        view = view[view["side"] == side_filter]
+    if result_filter == "Win" and "pnl_dollars" in view.columns:
+        view = view[view["pnl_dollars"] > 0]
+    elif result_filter == "Loss" and "pnl_dollars" in view.columns:
+        view = view[view["pnl_dollars"] <= 0]
+
+    if view.empty:
+        st.info("No trades match the selected filters.")
+        return
+
+    # ── Build display DataFrame ───────────────────────────────────────────────
+    # Compute cumulative P&L in chronological order, then reverse for display
+    view = view.sort_values("trade_id", ascending=True).copy()
+    if "pnl_dollars" in view.columns:
+        view["cum_pnl"] = view["pnl_dollars"].cumsum().round(2)
+
+    view = view.sort_values("trade_id", ascending=False)   # newest first
+
+    # Select and rename columns for display
+    col_map = {
+        "trade_id":    "#",
+        "date":        "Date",
+        "side":        "Side",
+        "entry_price": "Entry",
+        "exit_price":  "Exit",
+        "exit_reason": "Reason",
+        "pnl_dollars": "P&L ($)",
+        "pnl_ticks":   "P&L (ticks)",
+        "cum_pnl":     "Cum. P&L ($)",
+    }
+    available_cols = [c for c in col_map if c in view.columns]
+    display = view[available_cols].rename(columns=col_map)
+
+    # ── Colour P&L columns ────────────────────────────────────────────────────
+    def _colour(val):
+        try:
+            v = float(val)
+            if v > 0:
+                return "color: #22c55e; font-weight:600"   # green
+            if v < 0:
+                return "color: #ef4444; font-weight:600"   # red
+        except Exception:
+            pass
+        return ""
+
+    pnl_cols = [c for c in ("P&L ($)", "P&L (ticks)", "Cum. P&L ($)")
+                if c in display.columns]
+
+    styled = display.style.applymap(_colour, subset=pnl_cols) if pnl_cols else display.style
+
+    # Format numeric columns
+    fmt = {}
+    for col in ("Entry", "Exit"):
+        if col in display.columns:
+            fmt[col] = "{:,.2f}"
+    for col in ("P&L ($)", "Cum. P&L ($)"):
+        if col in display.columns:
+            fmt[col] = "{:+.2f}"
+    if "P&L (ticks)" in display.columns:
+        fmt["P&L (ticks)"] = "{:+.1f}"
+    if fmt:
+        styled = styled.format(fmt, na_rep="—")
+
+    st.dataframe(styled, hide_index=True)
+
+
 def render_recent_logs(state: dict):
     """Scrollable log panel showing the last 25 bot activity entries."""
     logs = state.get("recent_logs", [])
@@ -514,6 +624,10 @@ def main():
     # ── Historical equity curve ───────────────────────────────────────────────
     render_equity_curve(all_trades)
     render_win_loss_bars(all_trades)
+    st.divider()
+
+    # ── All trades table ──────────────────────────────────────────────────────
+    render_all_trades_table(all_trades)
 
     # ── Auto-refresh ──────────────────────────────────────────────────────────
     # Clears the cache and re-runs the entire script every N seconds.
