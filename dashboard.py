@@ -377,8 +377,8 @@ def render_todays_trades(today_trades: pd.DataFrame):
             return ""
 
     st.dataframe(
-        styled.style.applymap(colour_pnl, subset=["pnl_dollars"]
-                              if "pnl_dollars" in styled.columns else []),
+        styled.style.map(colour_pnl, subset=["pnl_dollars"]
+                         if "pnl_dollars" in styled.columns else []),
         hide_index=True,
     )
 
@@ -525,7 +525,7 @@ def render_all_trades_table(all_trades: pd.DataFrame):
     pnl_cols = [c for c in ("P&L ($)", "P&L (ticks)", "Cum. P&L ($)")
                 if c in display.columns]
 
-    styled = display.style.applymap(_colour, subset=pnl_cols) if pnl_cols else display.style
+    styled = display.style.map(_colour, subset=pnl_cols) if pnl_cols else display.style
 
     # Format numeric columns
     fmt = {}
