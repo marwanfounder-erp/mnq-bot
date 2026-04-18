@@ -379,7 +379,6 @@ def render_todays_trades(today_trades: pd.DataFrame):
     st.dataframe(
         styled.style.applymap(colour_pnl, subset=["pnl_dollars"]
                               if "pnl_dollars" in styled.columns else []),
-        use_container_width=True,
         hide_index=True,
     )
 
@@ -400,8 +399,7 @@ def render_equity_curve(all_trades: pd.DataFrame):
     chart_data = closed[["cumulative_pnl"]].copy()
     chart_data.index = range(len(chart_data))
 
-    st.line_chart(chart_data, y="cumulative_pnl",
-                  use_container_width=True)
+    st.line_chart(chart_data, y="cumulative_pnl")
 
     # Summary row below chart
     total_pnl  = closed["pnl_dollars"].sum()
@@ -432,8 +430,7 @@ def render_win_loss_bars(all_trades: pd.DataFrame):
         return
 
     st.subheader("Monthly Breakdown")
-    st.bar_chart(monthly.set_index("month")[["wins", "losses"]],
-                 use_container_width=True)
+    st.bar_chart(monthly.set_index("month")[["wins", "losses"]])
 
 
 def render_recent_logs(state: dict):

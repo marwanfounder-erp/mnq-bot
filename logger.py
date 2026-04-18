@@ -300,23 +300,48 @@ class TradeLogger:
             writer.writerow(trade)
 
     def _load_last_id(self) -> int:
-        """Read the CSV to find the highest existing trade_id for continuity."""
-        if not os.path.exists(LOG_FILE):
-            return 0
-
+        """
+        Find the highest existing trade_id across both the CSV journal and
+        Supabase, so restarts never reuse an id that already exists remotely.
+        """
         last_id = 0
-        try:
-            with open(LOG_FILE, "r", newline="") as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    try:
-                        tid = int(row.get("trade_id", 0))
-                        if tid > last_id:
-                            last_id = tid
-                    except (ValueError, TypeError):
-                        pass
-        except Exception:
-            pass
+
+        # ── 1. Scan the local CSV ─────────────────────────────────────────────
+        if os.path.exists(LOG_FILE):
+            try:
+                with open(LOG_FILE, "r", newline="") as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        try:
+                            tid = int(row.get("trade_id", 0))
+                            if tid > last_id:
+                                last_id = tid
+                        except (ValueError, TypeError):
+                            pass
+            except Exception:
+                pass
+
+        # ── 2. Query Supabase for its highest trade_id ────────────────────────
+        # This covers the case where the CSV is absent/reset but Supabase
+        # already holds prior trades, which would otherwise cause a duplicate
+        # key error on trade_id=1 at the next insert.
+        if _supabase_client is not None:
+            try:
+                resp = (
+                    _supabase_client
+                    .table("trades")
+                    .select("trade_id")
+                    .order("trade_id", desc=True)
+                    .limit(1)
+                    .execute()
+                )
+                if resp.data:
+                    supabase_last = int(resp.data[0].get("trade_id", 0))
+                    if supabase_last > last_id:
+                        last_id = supabase_last
+                        print(f"[LOGGER] Resuming from Supabase trade_id={last_id}")
+            except Exception as _e:
+                print(f"[LOGGER] Could not fetch last trade_id from Supabase: {_e}")
 
         return last_id
 

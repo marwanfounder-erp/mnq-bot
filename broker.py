@@ -175,13 +175,22 @@ class AlpacaBroker:
     # Order management
     # ─────────────────────────────────────────────────────────────────────────
 
-    def place_market_order(self, action: str, qty: int = ORDER_QTY) -> Optional[dict]:
+    def place_market_order(self, action: str, qty: int = ORDER_QTY,
+                           stop_price: float = None,
+                           target_price: float = None) -> Optional[dict]:
         """
-        Submit a market order.
+        Submit a market order, optionally with bracket (SL + TP) legs.
+
+        When stop_price and target_price are both provided the order is
+        submitted as a single bracket order (OrderClass.BRACKET) so both
+        legs share the same parent and Alpaca never raises
+        "insufficient qty available" on the second leg.
 
         Args:
-            action: "Buy" or "Sell"
-            qty:    number of shares
+            action:       "Buy" or "Sell"
+            qty:          number of shares
+            stop_price:   stop-loss trigger price  (bracket leg, optional)
+            target_price: take-profit limit price  (bracket leg, optional)
 
         Returns:
             dict {"fillPrice": float, "order_id": str} or None on failure.
@@ -190,19 +199,40 @@ class AlpacaBroker:
             return None
 
         try:
-            from alpaca.trading.requests import MarketOrderRequest
-            from alpaca.trading.enums    import OrderSide, TimeInForce
+            from alpaca.trading.requests import (MarketOrderRequest,
+                                                  TakeProfitRequest,
+                                                  StopLossRequest)
+            from alpaca.trading.enums    import OrderClass, OrderSide, TimeInForce
 
             side = OrderSide.BUY if action.lower() == "buy" else OrderSide.SELL
 
-            req   = MarketOrderRequest(
-                symbol        = SYMBOL,
-                qty           = qty,
-                side          = side,
-                time_in_force = TimeInForce.DAY,
-            )
+            use_bracket = stop_price is not None and target_price is not None
+
+            if use_bracket:
+                req = MarketOrderRequest(
+                    symbol        = SYMBOL,
+                    qty           = qty,
+                    side          = side,
+                    time_in_force = TimeInForce.DAY,
+                    order_class   = OrderClass.BRACKET,
+                    take_profit   = TakeProfitRequest(
+                                        limit_price=round(target_price, 2)),
+                    stop_loss     = StopLossRequest(
+                                        stop_price=round(stop_price, 2)),
+                )
+                print(f"[BROKER] Bracket {action} x{qty} {SYMBOL} — "
+                      f"SL:{stop_price:.2f}  TP:{target_price:.2f}")
+            else:
+                req = MarketOrderRequest(
+                    symbol        = SYMBOL,
+                    qty           = qty,
+                    side          = side,
+                    time_in_force = TimeInForce.DAY,
+                )
+                print(f"[BROKER] Market {action} x{qty} {SYMBOL}")
+
             order = self._trading_client.submit_order(req)
-            print(f"[BROKER] Market {action} x{qty} {SYMBOL} — id: {order.id}")
+            print(f"[BROKER] Order submitted — id: {order.id}")
 
             fill_price = self._await_fill(str(order.id))
             return {"fillPrice": fill_price, "order_id": str(order.id)}

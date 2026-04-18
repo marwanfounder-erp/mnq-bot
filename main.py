@@ -158,27 +158,34 @@ def open_position(signal: str, current_price: float):
         target_action = "Buy"    # take-profit covers a short
         side          = "Short"
 
-    # ── Step 1: Entry market order ────────────────────────────────────────────
-    entry_order = broker.place_market_order(entry_action, qty=ORDER_QTY)
+    # ── Step 1: Compute approx SL / TP from current price ────────────────────
+    # These are used as bracket legs on the entry order.  After fill we
+    # recompute from the actual fill price for software-level monitoring.
+    approx_stop   = risk.get_stop_price(current_price, side)
+    approx_target = risk.get_target_price(current_price, side)
+
+    # ── Step 2: Entry market order (with bracket SL/TP legs) ─────────────────
+    # Submitting SL and TP as bracket legs in a single order prevents
+    # Alpaca's "insufficient qty" error that occurs when two independent
+    # closing orders compete for the same position shares.
+    entry_order = broker.place_market_order(
+        entry_action, qty=ORDER_QTY,
+        stop_price=approx_stop, target_price=approx_target,
+    )
     if entry_order is None:
         _log("[MAIN] Entry order failed — skipping this bar.")
         return
 
-    # Use the simulated fill price in paper mode, otherwise use API fill
+    # Use the actual fill price returned by the broker
     fill_price = entry_order.get("fillPrice", current_price)
 
-    # ── Step 2: Compute SL / TP prices ───────────────────────────────────────
+    # ── Step 3: Recompute exact SL / TP from actual fill price ───────────────
+    # Used for software-level exit monitoring in run_iteration().
     stop_price   = risk.get_stop_price(fill_price, side)
     target_price = risk.get_target_price(fill_price, side)
 
     _log(f"[MAIN] Entry: {side} @ {fill_price:.2f}  |  "
          f"SL: {stop_price:.2f}  |  TP: {target_price:.2f}")
-
-    # ── Step 3: Place bracket orders ─────────────────────────────────────────
-    # Stop-loss order
-    broker.place_stop_order(stop_action, stop_price, qty=ORDER_QTY)
-    # Take-profit (limit) order
-    broker.place_limit_order(target_action, target_price, qty=ORDER_QTY)
 
     # ── Step 4: Record in RiskManager and Logger ──────────────────────────────
     risk.record_trade_open(fill_price, side)
