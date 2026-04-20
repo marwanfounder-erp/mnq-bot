@@ -193,7 +193,7 @@ def render_kpi_row(state: dict, today_trades: pd.DataFrame, all_trades: pd.DataF
         Daily P&L  |  Drawdown %  |  Session  |  Trades taken  |  All-Time P&L
     """
     # Compute values
-    daily_pnl    = state.get("daily_pnl", 0.0)
+    daily_pnl    = state.get("daily_pnl") or 0.0
     in_trade     = state.get("in_trade", False)
     halted       = state.get("trading_halted", False)
     session_on   = state.get("session_active", False)
@@ -274,10 +274,10 @@ def render_position_card(state: dict):
         return
 
     side         = state.get("position_side", "—")
-    entry_price  = state.get("entry_price", 0.0)
-    stop_price   = state.get("stop_price", 0.0)
-    target_price = state.get("target_price", 0.0)
-    last_price   = state.get("last_price", 0.0)
+    entry_price  = state.get("entry_price")  or 0.0
+    stop_price   = state.get("stop_price")   or 0.0
+    target_price = state.get("target_price") or 0.0
+    last_price   = state.get("last_price")   or 0.0
 
     # Unrealized P&L estimate
     if side == "Long":
@@ -311,27 +311,35 @@ def render_indicators(state: dict):
 
     st.subheader("Latest Indicators")
 
-    ema_fast = indicators.get("ema_fast", 0.0)
-    ema_slow = indicators.get("ema_slow", 0.0)
-    rsi      = indicators.get("rsi", 50.0)
-    last_price = state.get("last_price", 0.0)
+    ema_fast   = indicators.get("ema_fast")
+    ema_slow   = indicators.get("ema_slow")
+    rsi        = indicators.get("rsi")
+    last_price = state.get("last_price")
 
-    trend = "🐂 Bullish" if last_price > ema_slow else "🐻 Bearish"
-    rsi_zone = ("Oversold 🔵" if rsi < 30
-                else "Overbought 🔴" if rsi > 70
-                else "Neutral ⚪")
+    if last_price is not None and ema_slow is not None:
+        trend = "🐂 Bullish" if last_price > ema_slow else "🐻 Bearish"
+    else:
+        trend = "—"
+
+    if rsi is not None:
+        rsi_zone = ("Oversold 🔵" if rsi < 30
+                    else "Overbought 🔴" if rsi > 70
+                    else "Neutral ⚪")
+    else:
+        rsi_zone = "—"
 
     col1, col2, col3, col4, col5 = st.columns(5)
-    col1.metric("Last Price", f"{last_price:,.2f}")
-    col2.metric(f"EMA {9}",   f"{ema_fast:,.2f}")
-    col3.metric(f"EMA {21}",  f"{ema_slow:,.2f}")
-    col4.metric("RSI (14)",   f"{rsi:.1f}", delta=rsi_zone, delta_color="off")
+    col1.metric("Last Price", f"{last_price:,.2f}" if last_price is not None else "—")
+    col2.metric(f"EMA {9}",   f"{ema_fast:,.2f}"  if ema_fast  is not None else "—")
+    col3.metric(f"EMA {21}",  f"{ema_slow:,.2f}"  if ema_slow  is not None else "—")
+    col4.metric("RSI (14)",   f"{rsi:.1f}"        if rsi       is not None else "—",
+                delta=rsi_zone, delta_color="off")
     col5.metric("Trend",      trend)
 
 
 def render_drawdown_bar(state: dict):
     """Visual progress bar showing how close daily P&L is to the limit."""
-    daily_pnl   = state.get("daily_pnl", 0.0)
+    daily_pnl   = state.get("daily_pnl") or 0.0
     used_pct    = min(abs(min(daily_pnl, 0)) / abs(DAILY_LOSS_LIMIT), 1.0)
 
     st.subheader("Daily Loss Meter")
