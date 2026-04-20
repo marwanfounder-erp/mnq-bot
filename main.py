@@ -23,6 +23,7 @@ import time
 import signal
 import datetime
 import json
+import threading
 from zoneinfo import ZoneInfo
 
 from config import (
@@ -53,6 +54,13 @@ except Exception:
 _log_buffer: list = []
 _LOG_MAX = 60
 
+# ─── Resilience settings ──────────────────────────────────────────────────────
+_HEARTBEAT_INTERVAL = 300    # seconds between heartbeat log lines (5 min)
+_WATCHDOG_THRESHOLD = 1800   # seconds of silence during session before alert (30 min)
+
+_last_heartbeat: float = 0.0  # epoch-seconds of last heartbeat emission
+_last_activity:  float = 0.0  # epoch-seconds of last main-loop iteration
+
 def _log(msg: str):
     """Print to console and append to the rolling log buffer."""
     print(msg)
@@ -78,6 +86,57 @@ strategy = Strategy()
 risk     = RiskManager()
 log      = TradeLogger()
 _tz      = ZoneInfo(TIMEZONE)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Heartbeat — emitted outside session so Railway logs show the bot is alive
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _emit_heartbeat_if_due():
+    """Log a keep-alive line every 5 minutes when outside session hours."""
+    global _last_heartbeat
+    now = datetime.datetime.now(tz=_tz)
+    ss  = now.replace(hour=TRADING_START[0], minute=TRADING_START[1], second=0, microsecond=0)
+    se  = now.replace(hour=TRADING_END[0],   minute=TRADING_END[1],   second=0, microsecond=0)
+    if ss <= now <= se:
+        return   # inside session — heartbeat not needed
+    if time.time() - _last_heartbeat >= _HEARTBEAT_INTERVAL:
+        _log(f"[HEARTBEAT] Bot alive — waiting for session  ({now.strftime('%H:%M ET')})")
+        _last_heartbeat = time.time()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Watchdog — background thread that alerts if loop stops during session hours
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _watchdog_thread():
+    """
+    Daemon thread: if the main loop stops updating _last_activity for
+    _WATCHDOG_THRESHOLD seconds while the session is open, send a Telegram
+    alert and print to console so Railway flags the issue.
+    """
+    while True:
+        time.sleep(60)   # check every minute
+        now = datetime.datetime.now(tz=_tz)
+        ss  = now.replace(hour=TRADING_START[0], minute=TRADING_START[1], second=0, microsecond=0)
+        se  = now.replace(hour=TRADING_END[0],   minute=TRADING_END[1],   second=0, microsecond=0)
+        if not (ss <= now <= se):
+            continue   # only watch during session hours
+        elapsed = time.time() - _last_activity
+        if elapsed >= _WATCHDOG_THRESHOLD:
+            mins = int(elapsed // 60)
+            msg  = (f"[WATCHDOG] No loop activity for {mins} min during session — "
+                    "bot may be frozen!")
+            print(msg)
+            if _TG:
+                try:
+                    _tg.send_message(
+                        f"⚠️ <b>WATCHDOG ALERT</b>\n"
+                        f"No bot loop activity for <b>{mins} minutes</b> during session!\n"
+                        f"<i>{now.strftime('%H:%M:%S ET')}</i>"
+                    )
+                except Exception:
+                    pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -285,15 +344,24 @@ def run_iteration():
     """
     now = datetime.datetime.now(tz=_tz)
 
-    # ── Force-close at session end ────────────────────────────────────────────
-    session_end = now.replace(hour=TRADING_END[0], minute=TRADING_END[1],
-                               second=0, microsecond=0)
-    if _active_trade["open"] and now >= session_end:
-        _log(f"[MAIN] Session end ({TRADING_END[0]:02d}:{TRADING_END[1]:02d} ET) "
-             "— force-closing position.")
-        current_price = broker.get_current_price() or _active_trade["entry_price"]
-        close_position("SESSION_END", current_price)
-        return
+    # ── Session bounds ────────────────────────────────────────────────────────
+    session_start = now.replace(hour=TRADING_START[0], minute=TRADING_START[1],
+                                second=0, microsecond=0)
+    session_end   = now.replace(hour=TRADING_END[0],   minute=TRADING_END[1],
+                                second=0, microsecond=0)
+    in_session    = session_start <= now <= session_end
+
+    # ── Outside session: close any stale position, then wait ─────────────────
+    # Handles both post-session restarts (after 11:30 ET) AND pre-session
+    # restarts (e.g. 4 AM Railway redeploy) so we never trade outside hours.
+    if not in_session:
+        if _active_trade["open"]:
+            boundary = ("Session end" if now > session_end
+                        else f"Pre-session restart (session opens {TRADING_START[0]:02d}:{TRADING_START[1]:02d} ET)")
+            _log(f"[MAIN] {boundary} — force-closing open position.")
+            current_price = broker.get_current_price() or _active_trade["entry_price"]
+            close_position("SESSION_END", current_price)
+        return   # nothing to do outside session hours
 
     # ── If currently in a trade: monitor for SL/TP ───────────────────────────
     if _active_trade["open"]:
@@ -436,6 +504,18 @@ def main():
     reconcile_position()
 
     print(f"[MAIN] Risk status: {risk.status_summary()}")
+
+    # ── Log current session status so Railway shows why we may be waiting ────
+    _now = datetime.datetime.now(tz=_tz)
+    _ss  = _now.replace(hour=TRADING_START[0], minute=TRADING_START[1], second=0, microsecond=0)
+    _se  = _now.replace(hour=TRADING_END[0],   minute=TRADING_END[1],   second=0, microsecond=0)
+    if _ss <= _now <= _se:
+        print(f"[MAIN] Session is OPEN — trading until {TRADING_END[0]:02d}:{TRADING_END[1]:02d} ET.")
+    elif _now < _ss:
+        print(f"[MAIN] Pre-session — waiting for {TRADING_START[0]:02d}:{TRADING_START[1]:02d} ET open.")
+    else:
+        print(f"[MAIN] Session CLOSED for today — waiting for next trading day.")
+
     print(f"[MAIN] Starting main loop.  Press Ctrl-C to stop.\n")
 
     # Notify Telegram that the bot is live
@@ -445,8 +525,14 @@ def main():
         except Exception:
             pass
 
+    # ── Start watchdog daemon thread ──────────────────────────────────────────
+    _wdog = threading.Thread(target=_watchdog_thread, name="watchdog", daemon=True)
+    _wdog.start()
+
     # ── Polling loop ──────────────────────────────────────────────────────────
+    global _last_activity
     while True:
+        _last_activity = time.time()   # watchdog resets on every iteration
         try:
             run_iteration()
         except KeyboardInterrupt:
@@ -459,6 +545,9 @@ def main():
 
         # Write state snapshot for the dashboard after every iteration
         write_state()
+
+        # Emit heartbeat log line if outside session and 5 min have elapsed
+        _emit_heartbeat_if_due()
 
         time.sleep(POLL_INTERVAL_SECONDS)
 
