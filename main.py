@@ -409,17 +409,16 @@ def write_state():
     The Streamlit dashboard reads this file each refresh cycle.
     Written after every run_iteration() call — failures are silently ignored.
     """
-    now = datetime.datetime.now(tz=_tz)
+    now           = datetime.datetime.now(tz=_tz)
     session_start = now.replace(hour=TRADING_START[0], minute=TRADING_START[1],
                                 second=0, microsecond=0)
     session_end   = now.replace(hour=TRADING_END[0],   minute=TRADING_END[1],
                                 second=0, microsecond=0)
+    in_session    = session_start <= now <= session_end
 
     # Only fetch live price during session hours — avoids triggering Alpaca
     # WebSocket session collisions every 30 s while the market is closed.
-    _ss = now.replace(hour=TRADING_START[0], minute=TRADING_START[1], second=0, microsecond=0)
-    _se = now.replace(hour=TRADING_END[0],   minute=TRADING_END[1],   second=0, microsecond=0)
-    last_price = broker.get_current_price() if _ss <= now <= _se else None
+    last_price = broker.get_current_price() if in_session else None
 
     state = {
         "timestamp":      now.isoformat(),
@@ -432,7 +431,7 @@ def write_state():
         "daily_pnl":      risk.daily_pnl,
         "trades_today":   risk.trades_today,
         "trading_halted": risk.trading_halted,
-        "session_active": session_start <= now <= session_end,
+        "session_active": in_session,
         "indicators":     {
             k: (float(v) if hasattr(v, "__float__") else v)
             for k, v in strategy.last_values.items()
