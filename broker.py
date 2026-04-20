@@ -156,20 +156,40 @@ class AlpacaBroker:
         """
         Return the latest trade price for SYMBOL.
         Returns None if data is unavailable.
+
+        On Alpaca "already connected" / session-collision errors the client is
+        rebuilt once and the request is retried — avoids noisy errors when
+        Railway briefly runs two instances during a redeploy.
         """
         if not self._connected:
             return None
 
-        try:
-            from alpaca.data.requests import StockLatestTradeRequest
+        for attempt in range(2):
+            try:
+                from alpaca.data.requests import StockLatestTradeRequest
+                from alpaca.data.historical import StockHistoricalDataClient
 
-            request = StockLatestTradeRequest(symbol_or_symbols=[SYMBOL])
-            latest  = self._data_client.get_stock_latest_trade(request)
-            return float(latest[SYMBOL].price)
+                request = StockLatestTradeRequest(symbol_or_symbols=[SYMBOL])
+                latest  = self._data_client.get_stock_latest_trade(request)
+                return float(latest[SYMBOL].price)
 
-        except Exception as exc:
-            print(f"[BROKER] get_current_price error: {exc}")
-            return None
+            except Exception as exc:
+                err = str(exc).lower()
+                if attempt == 0 and ("already connected" in err or "session" in err):
+                    # Rebuild the data client and retry once
+                    print("[BROKER] Session collision detected — rebuilding data client.")
+                    try:
+                        self._data_client = StockHistoricalDataClient(
+                            api_key    = ALPACA_API_KEY,
+                            secret_key = ALPACA_SECRET_KEY,
+                        )
+                    except Exception:
+                        pass
+                    continue
+                print(f"[BROKER] get_current_price error: {exc}")
+                return None
+
+        return None
 
     # ─────────────────────────────────────────────────────────────────────────
     # Order management

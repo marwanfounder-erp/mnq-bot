@@ -415,9 +415,15 @@ def write_state():
     session_end   = now.replace(hour=TRADING_END[0],   minute=TRADING_END[1],
                                 second=0, microsecond=0)
 
+    # Only fetch live price during session hours — avoids triggering Alpaca
+    # WebSocket session collisions every 30 s while the market is closed.
+    _ss = now.replace(hour=TRADING_START[0], minute=TRADING_START[1], second=0, microsecond=0)
+    _se = now.replace(hour=TRADING_END[0],   minute=TRADING_END[1],   second=0, microsecond=0)
+    last_price = broker.get_current_price() if _ss <= now <= _se else None
+
     state = {
         "timestamp":      now.isoformat(),
-        "last_price":     broker.get_current_price(),
+        "last_price":     last_price,
         "in_trade":       _active_trade["open"],
         "position_side":  _active_trade.get("side"),
         "entry_price":    _active_trade.get("entry_price"),
