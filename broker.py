@@ -347,7 +347,10 @@ class AlpacaBroker:
             self._trading_client.close_position(SYMBOL)
             print(f"[BROKER] Position closed for {SYMBOL}.")
         except Exception as exc:
-            print(f"[BROKER] close_position error: {exc}")
+            if "position not found" in str(exc).lower():
+                print(f"[BROKER] Position already closed (bracket SL/TP hit) — nothing to do.")
+            else:
+                print(f"[BROKER] close_position error: {exc}")
 
     # ─────────────────────────────────────────────────────────────────────────
     # Account helpers
