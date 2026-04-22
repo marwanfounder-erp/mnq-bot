@@ -395,18 +395,43 @@ def render_equity_curve(all_trades: pd.DataFrame):
     """Cumulative P&L line chart across all historical trades."""
     st.subheader("Equity Curve (All Time)")
 
-    closed = all_trades[all_trades["pnl_dollars"].notna()].copy()
+    # Prefer Supabase (full history) over local CSV
+    sb = load_trades_from_supabase()
+    if not sb.empty and "pnl_dollars" in sb.columns:
+        closed = sb[sb["pnl_dollars"].notna()].copy()
+        # Derive date from entry_time ISO timestamp
+        if "entry_time" in closed.columns:
+            closed["date"] = (
+                closed["entry_time"].fillna("").astype(str)
+                .str.extract(r"^(\d{4}-\d{2}-\d{2})", expand=False)
+                .fillna("")
+            )
+        # Sort chronologically using trade_id or entry_time
+        sort_col = "trade_id" if "trade_id" in closed.columns else "entry_time"
+        closed = closed.sort_values(sort_col, ascending=True)
+    else:
+        closed = all_trades[all_trades["pnl_dollars"].notna()].copy()
+        if "trade_id" in closed.columns:
+            closed = closed.sort_values("trade_id", ascending=True)
+
     if closed.empty:
         st.info("No trade history yet.")
         return
 
-    closed["cumulative_pnl"] = closed["pnl_dollars"].cumsum()
-    closed["label"]          = closed["date"] + " " + closed["entry_time"].fillna("")
+    closed = closed.reset_index(drop=True)
+    closed["Trade #"] = closed.index + 1
+    closed["cumulative_pnl"] = closed["pnl_dollars"].cumsum().round(2)
 
-    # Build a simple line chart with pandas (no extra plotting library needed)
-    chart_data = closed[["cumulative_pnl"]].copy()
-    chart_data.index = range(len(chart_data))
+    # Build x-axis label: "Trade N — YYYY-MM-DD" when date is available
+    if "date" in closed.columns and closed["date"].str.len().gt(0).any():
+        closed["x_label"] = (
+            "T" + closed["Trade #"].astype(str)
+            + " " + closed["date"]
+        )
+    else:
+        closed["x_label"] = "Trade " + closed["Trade #"].astype(str)
 
+    chart_data = closed.set_index("x_label")[["cumulative_pnl"]]
     st.line_chart(chart_data, y="cumulative_pnl")
 
     # Summary row below chart
@@ -423,11 +448,25 @@ def render_equity_curve(all_trades: pd.DataFrame):
 
 def render_win_loss_bars(all_trades: pd.DataFrame):
     """Simple bar chart: wins vs losses by month."""
-    closed = all_trades[all_trades["pnl_dollars"].notna()].copy()
-    if closed.empty or len(closed) < 3:
+    sb = load_trades_from_supabase()
+    if not sb.empty and "pnl_dollars" in sb.columns:
+        closed = sb[sb["pnl_dollars"].notna()].copy()
+        if "entry_time" in closed.columns:
+            closed["date"] = (
+                closed["entry_time"].fillna("").astype(str)
+                .str.extract(r"^(\d{4}-\d{2}-\d{2})", expand=False)
+                .fillna("")
+            )
+    else:
+        closed = all_trades[all_trades["pnl_dollars"].notna()].copy()
+
+    if closed.empty or len(closed) < 2:
         return
 
-    closed["month"] = pd.to_datetime(closed["date"]).dt.to_period("M").astype(str)
+    if "date" not in closed.columns or closed["date"].str.len().eq(0).all():
+        return
+
+    closed["month"] = pd.to_datetime(closed["date"], errors="coerce").dt.to_period("M").astype(str)
     monthly = (closed.groupby("month")
                      .agg(wins=("pnl_dollars", lambda x: (x > 0).sum()),
                           losses=("pnl_dollars", lambda x: (x < 0).sum()),
