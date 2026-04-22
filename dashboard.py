@@ -456,7 +456,9 @@ def render_all_trades_table(all_trades: pd.DataFrame):
         df = sb.copy()
         # Derive a plain date string from the ISO entry_time timestamp
         if "entry_time" in df.columns:
-            df["date"] = pd.to_datetime(df["entry_time"], errors="coerce").dt.date.astype(str)
+            df["date"] = (df["entry_time"].fillna("").astype(str)
+                          .str.extract(r"^(\d{4}-\d{2}-\d{2})", expand=False)
+                          .fillna(""))
         # Supabase doesn't store pnl_ticks — leave column absent
         source_label = "Supabase"
     elif not all_trades.empty:
