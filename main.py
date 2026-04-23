@@ -410,9 +410,11 @@ def write_state():
     Written after every run_iteration() call — failures are silently ignored.
     """
     now           = datetime.datetime.now(tz=_tz)
-    session_start = now.replace(hour=TRADING_START[0], minute=TRADING_START[1],
+    # Use effective_start (may be delayed by news calendar) for session gate
+    eff_start     = risk.effective_start
+    session_start = now.replace(hour=eff_start[0], minute=eff_start[1],
                                 second=0, microsecond=0)
-    session_end   = now.replace(hour=TRADING_END[0],   minute=TRADING_END[1],
+    session_end   = now.replace(hour=TRADING_END[0], minute=TRADING_END[1],
                                 second=0, microsecond=0)
     in_session    = session_start <= now <= session_end
 
@@ -438,6 +440,11 @@ def write_state():
             if k in ("ema_fast", "ema_slow", "rsi", "close")
         },
         "recent_logs":    list(_log_buffer[-25:]),
+        # ── News calendar snapshot (populated once per day by RiskManager) ──
+        "news_events":          risk.news_events,
+        "news_day_blocked":     risk.day_blocked,
+        "news_session_delayed": risk.session_delayed,
+        "news_effective_start": f"{eff_start[0]:02d}:{eff_start[1]:02d}",
     }
 
     try:

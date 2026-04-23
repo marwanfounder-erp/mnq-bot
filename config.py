@@ -47,6 +47,11 @@ ALPACA_BASE_URL   = _env("ALPACA_BASE_URL", "https://paper-api.alpaca.markets/v2
 SUPABASE_URL = _env("SUPABASE_URL")
 SUPABASE_KEY = _env("SUPABASE_KEY")
 
+# ─── Finnhub API ──────────────────────────────────────────────────────────────
+# Free key from https://finnhub.io — used for live economic calendar lookups.
+# Optional — if not set, the news calendar falls back to NEWS_BLACKOUT_DATES.
+FINNHUB_API_KEY = _env("FINNHUB_API_KEY")
+
 # ─── Environment Flags ────────────────────────────────────────────────────────
 PAPER_TRADING = _env_bool("PAPER_TRADING", default=True)
 

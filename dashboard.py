@@ -303,6 +303,84 @@ def render_position_card(state: dict):
                 delta=f"Last: {last_price:,.2f}")
 
 
+def render_news_events(state: dict):
+    """
+    Display today's high-impact economic calendar events.
+
+    Data comes from bot_state.json (written by main.py each cycle).
+    If the bot is offline, the section is hidden — no stale data shown.
+    """
+    # Don't show the section if the bot hasn't populated news state yet
+    if "news_events" not in state:
+        return
+
+    st.subheader("Today's News Events")
+
+    events: list        = state.get("news_events", [])
+    day_blocked: bool   = state.get("news_day_blocked", False)
+    session_delayed     = state.get("news_session_delayed", False)
+    effective_start: str = state.get("news_effective_start", "09:30")
+
+    # ── Top banner ────────────────────────────────────────────────────────────
+    if day_blocked:
+        st.error("🚨 **FOMC DAY — Entire session BLOCKED.** No trading today.")
+    elif session_delayed:
+        # Find the first delayed event name for the banner message
+        first_delayed = next(
+            (e for e in events if e.get("status") == "DELAYED"), None
+        )
+        banner_detail = (
+            f"{first_delayed['event']} @ {first_delayed['time_et']} ET"
+            if first_delayed else "High-impact event"
+        )
+        st.warning(
+            f"⚠️ **HIGH IMPACT NEWS:** {banner_detail} — "
+            f"Session delayed to **{effective_start} ET**"
+        )
+    elif events:
+        st.info("ℹ️ High-impact events today are outside the session window — trading normally.")
+    else:
+        st.success("✅ **No high-impact US news today — trading normally.**")
+
+    if not events:
+        return
+
+    # ── Build display table ───────────────────────────────────────────────────
+    _STATUS_COLOUR = {
+        "BLOCKED": "#ef4444",   # red
+        "DELAYED": "#f59e0b",   # amber
+        "CLEAR":   "#22c55e",   # green
+    }
+    _IMPACT_BG = {
+        "High":   "background-color:#3f1515; color:#f87171",
+        "Medium": "background-color:#3f2f00; color:#fbbf24",
+        "Low":    "background-color:#1e1e2e; color:#9ca3af",
+    }
+
+    df_news = pd.DataFrame(events, columns=["time_et", "event", "impact", "status"])
+    df_news = df_news.rename(columns={
+        "time_et": "Time (ET)",
+        "event":   "Event",
+        "impact":  "Impact",
+        "status":  "Status",
+    })
+
+    def _colour_status(val: str) -> str:
+        color = _STATUS_COLOUR.get(val, "#6b7280")
+        return f"color: {color}; font-weight: 700"
+
+    def _colour_impact(val: str) -> str:
+        return _IMPACT_BG.get(val, "")
+
+    styled = (
+        df_news.style
+        .map(_colour_status, subset=["Status"])
+        .map(_colour_impact, subset=["Impact"])
+    )
+
+    st.dataframe(styled, hide_index=True, use_container_width=True)
+
+
 def render_indicators(state: dict):
     """Latest EMA / RSI snapshot from the most recent bar evaluation."""
     indicators = state.get("indicators", {})
@@ -655,6 +733,11 @@ def main():
     # ── Current position ──────────────────────────────────────────────────────
     render_position_card(state)
     st.divider()
+
+    # ── News calendar ─────────────────────────────────────────────────────────
+    if state:
+        render_news_events(state)
+        st.divider()
 
     # ── Indicators ────────────────────────────────────────────────────────────
     if state:
