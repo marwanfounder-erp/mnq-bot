@@ -755,7 +755,6 @@ def main():
 
     # ── Historical equity curve ───────────────────────────────────────────────
     render_equity_curve(all_trades)
-    render_win_loss_bars(all_trades)
     st.divider()
 
     # ── All trades table ──────────────────────────────────────────────────────
