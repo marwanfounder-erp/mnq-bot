@@ -4,6 +4,7 @@
 # Strategy rules (all must be true simultaneously):
 #
 #   LONG entry:
+#       • BULL regime (close > EMA21 for ≥3 consecutive bars) [Regime Filter]
 #       • Close price > EMA 21  (uptrend filter)
 #       • RSI(14) < 45           (momentum dip — not overbought)
 #       • EMA 9 trending upward  (price accelerating)
@@ -11,12 +12,18 @@
 #       • RSI rising for last 2 bars                 [RSI Direction Filter]
 #
 #   SHORT entry:
+#       • BEAR regime (close < EMA21 for ≥3 consecutive bars) [Regime Filter]
 #       • Close price < EMA 21  (downtrend filter)
 #       • RSI(14) > 55           (momentum surge — not oversold)
 #       • EMA 9 trending downward
 #       • No bar in last 5 had RSI > 65              [RSI Overbought Memory Filter]
 #       • Price below EMA21 for ≥3 consecutive bars  [Trend Strength Filter]
 #       • RSI falling for last 2 bars                [RSI Direction Filter]
+#
+#   Regime rules:
+#       • BULL regime  → LONG only  (SHORT signals blocked)
+#       • BEAR regime  → SHORT only (LONG signals blocked)
+#       • UNCLEAR      → both LONG and SHORT blocked
 #
 #   Exit signals (position management):
 #       • Price hits stop-loss  (risk_manager provides the level)
@@ -27,6 +34,7 @@
 
 from __future__ import annotations
 
+import csv as _csv
 import pandas as pd
 from typing import Optional, Literal
 
@@ -35,12 +43,16 @@ from config import (
     RSI_SELL_THRESHOLD,
     EMA_FAST,
     EMA_SLOW,
+    LOG_FILE,
 )
 from indicators import calculate_all_indicators, get_latest_values
 
 
 # ─── Signal type alias ────────────────────────────────────────────────────────
 Signal = Literal["LONG", "SHORT", "HOLD"]
+
+# ─── Regime type alias ────────────────────────────────────────────────────────
+Regime = Literal["BULL", "BEAR", "UNCLEAR"]
 
 
 class Strategy:
@@ -52,6 +64,7 @@ class Strategy:
     def __init__(self):
         self.last_signal: Signal = "HOLD"
         self.last_values: dict   = {}
+        self.last_regime: Regime = "UNCLEAR"
 
     # ─────────────────────────────────────────────────────────────────────────
     # Core signal evaluation
@@ -115,12 +128,16 @@ class Strategy:
         # ── Step 4: Apply additional filters ─────────────────────────────────
         candidate = "LONG" if long_base else ("SHORT" if short_base else "HOLD")
 
+        # Detect regime once — used both for filtering and state export
+        regime = self._detect_regime(df_ind)
+        self.last_regime = regime
+
         if candidate != "HOLD":
-            signal = self._apply_filters(df_ind, candidate)
+            signal = self._apply_filters(df_ind, candidate, regime)
         else:
             signal = "HOLD"
             # Still print filter summary so every bar is auditable
-            self._print_filter_summary(df_ind, candidate)
+            self._print_filter_summary(df_ind, candidate, regime)
 
         self.last_signal = signal
 
@@ -177,22 +194,81 @@ class Strategy:
         return None  # continue holding
 
     # ─────────────────────────────────────────────────────────────────────────
+    # Market regime detection
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _detect_regime(self, df_ind: pd.DataFrame) -> Regime:
+        """
+        Classify market regime using EMA21 vs close price for last 3 bars.
+
+        BULL   — close > EMA21 for all 3 consecutive bars
+        BEAR   — close < EMA21 for all 3 consecutive bars
+        UNCLEAR — price crossing EMA21; not consistently on one side
+        """
+        if len(df_ind) < 3:
+            return "UNCLEAR"
+
+        last3_close = df_ind["close"].iloc[-3:].values
+        last3_ema   = df_ind["ema_slow"].iloc[-3:].values
+
+        all_above = all(c > e for c, e in zip(last3_close, last3_ema))
+        all_below = all(c < e for c, e in zip(last3_close, last3_ema))
+
+        if all_above:
+            return "BULL"
+        elif all_below:
+            return "BEAR"
+        return "UNCLEAR"
+
+    # ─────────────────────────────────────────────────────────────────────────
     # Additional signal filters
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _apply_filters(self, df_ind: pd.DataFrame, candidate: Signal) -> Signal:
+    def _apply_filters(
+        self, df_ind: pd.DataFrame, candidate: Signal, regime: Regime
+    ) -> Signal:
         """
-        Run the three additional filters against a LONG or SHORT candidate.
+        Run all filters against a LONG or SHORT candidate.
         Returns the original candidate if all pass, or "HOLD" if any fail.
 
-        Filters applied:
-          1. RSI Overbought Memory  — SHORT only: no bar in last 5 had RSI > 65
-          2. Trend Strength         — price on same side of EMA21 for ≥3 bars
-          3. RSI Direction          — RSI rising (LONG) or falling (SHORT) last 2 bars
+        Filter order (regime is checked FIRST):
+          0. Market Regime         — BULL→LONG only, BEAR→SHORT only, UNCLEAR→block all
+          1. RSI Overbought Memory — SHORT only: no bar in last 5 had RSI > 65
+          2. Trend Strength        — price on same side of EMA21 for ≥3 bars
+          3. RSI Direction         — RSI rising (LONG) or falling (SHORT) last 2 bars
         """
         rsi_series   = df_ind["rsi"]
         close_series = df_ind["close"]
         ema_slow_ser = df_ind["ema_slow"]
+
+        # ── Filter 0: Market Regime (checked FIRST) ───────────────────────────
+        regime_pass = True
+        if regime == "UNCLEAR":
+            regime_pass = False
+            print(
+                f"[STRATEGY] UNCLEAR REGIME — "
+                f"{candidate} signal ignored, waiting for trend ✅"
+            )
+        elif regime == "BULL" and candidate == "SHORT":
+            regime_pass = False
+            print("[STRATEGY] BULL REGIME — SHORT signal ignored ✅")
+        elif regime == "BEAR" and candidate == "LONG":
+            regime_pass = False
+            print("[STRATEGY] BEAR REGIME — LONG signal ignored ✅")
+
+        # Early exit: no point running other filters if regime blocks the trade
+        if not regime_pass:
+            regime_mark = "❌"
+            mem_display = "N/A" if candidate == "LONG" else "N/A"
+            print(
+                f"[STRATEGY] Filter check:\n"
+                f"  Regime         → {regime} {regime_mark}\n"
+                f"  RSI memory     → N/A\n"
+                f"  Trend strength → N/A\n"
+                f"  RSI direction  → N/A\n"
+                f"  Final signal   → HOLD"
+            )
+            return "HOLD"
 
         # ── Filter 1: RSI Overbought Memory (SHORT only) ──────────────────────
         rsi_memory_pass = True
@@ -246,32 +322,119 @@ class Strategy:
         all_pass = rsi_memory_pass and trend_strength_pass and rsi_direction_pass
         final    = candidate if all_pass else "HOLD"
 
-        mem_mark   = "✅" if rsi_memory_pass   else "❌"
-        trend_mark = "✅" if trend_strength_pass else "❌"
-        dir_mark   = "✅" if rsi_direction_pass  else "❌"
+        regime_mark = "✅"
+        mem_mark    = "✅" if rsi_memory_pass    else "❌"
+        trend_mark  = "✅" if trend_strength_pass else "❌"
+        dir_mark    = "✅" if rsi_direction_pass  else "❌"
 
         # RSI memory filter only applies to SHORT; mark N/A for LONG
         mem_display = mem_mark if candidate == "SHORT" else "N/A"
 
         print(
-            f"[STRATEGY] Filter check:  "
-            f"RSI memory {mem_display}  "
-            f"Trend strength {trend_mark}  "
-            f"RSI direction {dir_mark}  "
-            f"→  Final signal: {final}"
+            f"[STRATEGY] Filter check:\n"
+            f"  Regime         → {regime} {regime_mark}\n"
+            f"  RSI memory     → {mem_display}\n"
+            f"  Trend strength → {trend_mark}\n"
+            f"  RSI direction  → {dir_mark}\n"
+            f"  Final signal   → {final}"
         )
         return final
 
-    def _print_filter_summary(self, df_ind: pd.DataFrame, candidate: Signal) -> None:
+    def _print_filter_summary(
+        self, df_ind: pd.DataFrame, candidate: Signal, regime: Regime
+    ) -> None:
         """
         Emit the filter-summary line even when the base condition is HOLD
         so every bar produces a consistent audit trail.
         """
         print(
-            "[STRATEGY] Filter check:  "
-            "RSI memory N/A  Trend strength N/A  RSI direction N/A  "
-            "→  Final signal: HOLD  (base condition not met)"
+            f"[STRATEGY] Filter check:\n"
+            f"  Regime         → {regime} (base condition not met)\n"
+            f"  RSI memory     → N/A\n"
+            f"  Trend strength → N/A\n"
+            f"  RSI direction  → N/A\n"
+            f"  Final signal   → HOLD"
         )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Regime backtest (printed once at startup)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def run_regime_backtest(self, n: int = 8) -> None:
+        """
+        Read the last N closed trades from trades.csv and show what the
+        regime filter would have done to each one.
+
+        Uses entry_price vs ema_slow at entry as a single-bar regime proxy
+        (full 3-bar history is not stored in the CSV, so this is an
+        approximation — directionally accurate for audit purposes).
+        """
+        try:
+            with open(LOG_FILE, newline="") as f:
+                rows = list(_csv.DictReader(f))
+        except (FileNotFoundError, OSError):
+            return   # no trade history yet — skip silently
+
+        closed = [r for r in rows if r.get("exit_price")]
+        if not closed:
+            return
+
+        recent = closed[-n:]
+        total_saved   = 0.0
+        total_missed  = 0.0
+        blocked_losses = 0
+
+        print(
+            f"[REGIME BACKTEST] ─── Last {len(recent)} closed trades vs regime filter ───"
+        )
+        for row in recent:
+            try:
+                tid   = row.get("trade_id", "?")
+                side  = row.get("side", "")
+                entry = float(row.get("entry_price") or 0)
+                ema_s = float(row.get("ema_slow")    or 0)
+                pnl   = float(row.get("pnl_dollars") or 0)
+            except (ValueError, TypeError):
+                continue
+
+            if ema_s == 0:
+                continue
+
+            # Single-bar regime proxy at entry
+            regime = "BULL" if entry > ema_s else "BEAR"
+
+            blocked = (
+                (side == "Long"  and regime == "BEAR") or
+                (side == "Short" and regime == "BULL")
+            )
+
+            if blocked:
+                if pnl < 0:
+                    total_saved  += abs(pnl)
+                    blocked_losses += 1
+                    tag = f"BLOCKED ✅  saved ${abs(pnl):.2f}"
+                else:
+                    total_missed += pnl
+                    tag = f"BLOCKED ⚠️  (missed +${pnl:.2f})"
+            else:
+                result = "WIN " if pnl > 0 else "LOSS"
+                tag = f"ALLOWED ✅  {result} ${pnl:+.2f}"
+
+            print(
+                f"[REGIME BACKTEST]  Trade {tid:>3} {side.upper():<5} "
+                f"→ {regime} regime → {tag}"
+            )
+
+        print(
+            f"[REGIME BACKTEST]  Losses avoided   → ${total_saved:.2f}  "
+            f"({blocked_losses} trade{'s' if blocked_losses != 1 else ''})"
+        )
+        if total_missed > 0:
+            print(
+                f"[REGIME BACKTEST]  Wins also blocked → ${total_missed:.2f}  "
+                f"(regime is a two-edged filter)"
+            )
+        print("[REGIME BACKTEST] ──────────────────────────────────────────────")
 
     # ─────────────────────────────────────────────────────────────────────────
     # Internal helpers
@@ -287,16 +450,15 @@ class Strategy:
         signal: Signal,
     ):
         """Print a concise one-line bar evaluation summary."""
-        trend   = "BULL" if close > ema_slow else "BEAR"
-        rsi_lbl = f"RSI={rsi:.1f}"
         arrow   = "↑" if ema_rising else "↓"
+        regime  = self.last_regime
 
         print(
             f"[STRATEGY] close={close:.2f}  "
             f"EMA9={ema_fast:.2f}{arrow}  EMA21={ema_slow:.2f}  "
-            f"{rsi_lbl}  trend={trend}  →  {signal}"
+            f"RSI={rsi:.1f}  regime={regime}  →  {signal}"
         )
 
     def summary(self) -> dict:
         """Return the last-evaluated indicator snapshot and signal."""
-        return {**self.last_values, "signal": self.last_signal}
+        return {**self.last_values, "signal": self.last_signal, "regime": self.last_regime}

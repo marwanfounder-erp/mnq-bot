@@ -439,6 +439,7 @@ def write_state():
             for k, v in strategy.last_values.items()
             if k in ("ema_fast", "ema_slow", "rsi", "close")
         },
+        "market_regime":  strategy.last_regime,
         "recent_logs":    list(_log_buffer[-25:]),
         # ── News calendar snapshot (populated once per day by RiskManager) ──
         "news_events":          risk.news_events,
@@ -529,6 +530,9 @@ def main():
         print(f"[MAIN] Session CLOSED for today — waiting for next trading day.")
 
     print(f"[MAIN] Starting main loop.  Press Ctrl-C to stop.\n")
+
+    # ── Regime backtest against recent trade history ───────────────────────────
+    strategy.run_regime_backtest(n=8)
 
     # Notify Telegram that the bot is live
     if _TG:

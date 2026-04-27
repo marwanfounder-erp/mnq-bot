@@ -389,15 +389,11 @@ def render_indicators(state: dict):
 
     st.subheader("Latest Indicators")
 
-    ema_fast   = indicators.get("ema_fast")
-    ema_slow   = indicators.get("ema_slow")
-    rsi        = indicators.get("rsi")
-    last_price = state.get("last_price")
-
-    if last_price is not None and ema_slow is not None:
-        trend = "🐂 Bullish" if last_price > ema_slow else "🐻 Bearish"
-    else:
-        trend = "—"
+    ema_fast      = indicators.get("ema_fast")
+    ema_slow      = indicators.get("ema_slow")
+    rsi           = indicators.get("rsi")
+    last_price    = state.get("last_price")
+    market_regime = state.get("market_regime", "UNCLEAR")
 
     if rsi is not None:
         rsi_zone = ("Oversold 🔵" if rsi < 30
@@ -406,13 +402,25 @@ def render_indicators(state: dict):
     else:
         rsi_zone = "—"
 
-    col1, col2, col3, col4, col5 = st.columns(5)
-    col1.metric("Last Price", f"{last_price:,.2f}" if last_price is not None else "—")
-    col2.metric(f"EMA {9}",   f"{ema_fast:,.2f}"  if ema_fast  is not None else "—")
-    col3.metric(f"EMA {21}",  f"{ema_slow:,.2f}"  if ema_slow  is not None else "—")
-    col4.metric("RSI (14)",   f"{rsi:.1f}"        if rsi       is not None else "—",
+    _REGIME_LABEL = {
+        "BULL":    "🐂 BULL",
+        "BEAR":    "🐻 BEAR",
+        "UNCLEAR": "⚠️ UNCLEAR",
+    }
+    regime_label = _REGIME_LABEL.get(market_regime, "⚠️ UNCLEAR")
+
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
+    col1.metric("Last Price",     f"{last_price:,.2f}" if last_price is not None else "—")
+    col2.metric(f"EMA {9}",       f"{ema_fast:,.2f}"  if ema_fast  is not None else "—")
+    col3.metric(f"EMA {21}",      f"{ema_slow:,.2f}"  if ema_slow  is not None else "—")
+    col4.metric("RSI (14)",       f"{rsi:.1f}"        if rsi       is not None else "—",
                 delta=rsi_zone, delta_color="off")
-    col5.metric("Trend",      trend)
+    col5.metric("Market Regime",  regime_label,
+                delta="Based on EMA21 vs price (3 bars)", delta_color="off")
+    col6.metric("Direction",
+                "LONG only" if market_regime == "BULL"
+                else "SHORT only" if market_regime == "BEAR"
+                else "No trade")
 
 
 def render_drawdown_bar(state: dict):
