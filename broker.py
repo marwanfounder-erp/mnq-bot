@@ -31,7 +31,6 @@ from config import (
     BARS_TO_FETCH,
 )
 
-
 class AlpacaBroker:
     """
     Alpaca trading broker adapter.
