@@ -4,18 +4,18 @@
 # Strategy rules (all must be true simultaneously):
 #
 #   LONG entry:
-#       • BULL regime (close > EMA21 for ≥3 consecutive bars) [Regime Filter]
 #       • Close price > EMA 21  (uptrend filter)
-#       • RSI(14) < 45           (momentum dip — not overbought)
 #       • EMA 9 trending upward  (price accelerating)
+#       • BULL regime (close > EMA21 for ≥3 consecutive bars) [Regime Filter]
+#       • RSI between 35 and 50  (oversold-recovery sweet spot) [RSI Range Filter]
 #       • Price above EMA21 for ≥3 consecutive bars  [Trend Strength Filter]
 #       • RSI rising for last 2 bars                 [RSI Direction Filter]
 #
 #   SHORT entry:
-#       • BEAR regime (close < EMA21 for ≥3 consecutive bars) [Regime Filter]
 #       • Close price < EMA 21  (downtrend filter)
-#       • RSI(14) > 55           (momentum surge — not oversold)
 #       • EMA 9 trending downward
+#       • BEAR regime (close < EMA21 for ≥3 consecutive bars) [Regime Filter]
+#       • RSI between 50 and 65  (overbought-pullback sweet spot) [RSI Range Filter]
 #       • No bar in last 5 had RSI > 65              [RSI Overbought Memory Filter]
 #       • Price below EMA21 for ≥3 consecutive bars  [Trend Strength Filter]
 #       • RSI falling for last 2 bars                [RSI Direction Filter]
@@ -39,8 +39,10 @@ import pandas as pd
 from typing import Optional, Literal
 
 from config import (
-    RSI_BUY_THRESHOLD,
-    RSI_SELL_THRESHOLD,
+    RSI_LONG_MIN,
+    RSI_LONG_MAX,
+    RSI_SHORT_MIN,
+    RSI_SHORT_MAX,
     EMA_FAST,
     EMA_SLOW,
     LOG_FILE,
@@ -111,18 +113,17 @@ class Strategy:
 
         # ── Step 3: Apply base rules ──────────────────────────────────────────
         #
-        # LONG signal:  price > EMA21  AND  RSI < 45  AND  EMA9 rising
+        # LONG signal:  price > EMA21  AND  EMA9 rising
+        # (RSI range is now enforced as a dedicated filter in _apply_filters)
         long_base = (
-            close > ema_slow              # uptrend filter
-            and rsi < RSI_BUY_THRESHOLD   # pullback / dip
-            and ema_fast_rising           # short-term momentum up
+            close > ema_slow    # uptrend filter
+            and ema_fast_rising # short-term momentum up
         )
 
-        # SHORT signal: price < EMA21  AND  RSI > 55  AND  EMA9 falling
+        # SHORT signal: price < EMA21  AND  EMA9 falling
         short_base = (
-            close < ema_slow              # downtrend filter
-            and rsi > RSI_SELL_THRESHOLD  # elevated / overbought
-            and ema_fast_falling          # short-term momentum down
+            close < ema_slow     # downtrend filter
+            and ema_fast_falling # short-term momentum down
         )
 
         # ── Step 4: Apply additional filters ─────────────────────────────────
@@ -233,13 +234,15 @@ class Strategy:
 
         Filter order (regime is checked FIRST):
           0. Market Regime         — BULL→LONG only, BEAR→SHORT only, UNCLEAR→block all
-          1. RSI Overbought Memory — SHORT only: no bar in last 5 had RSI > 65
-          2. Trend Strength        — price on same side of EMA21 for ≥3 bars
-          3. RSI Direction         — RSI rising (LONG) or falling (SHORT) last 2 bars
+          1. RSI Range             — LONG: 35<RSI<50, SHORT: 50<RSI<65
+          2. RSI Overbought Memory — SHORT only: no bar in last 5 had RSI > 65
+          3. Trend Strength        — price on same side of EMA21 for ≥3 bars
+          4. RSI Direction         — RSI rising (LONG) or falling (SHORT) last 2 bars
         """
         rsi_series   = df_ind["rsi"]
         close_series = df_ind["close"]
         ema_slow_ser = df_ind["ema_slow"]
+        rsi          = rsi_series.iloc[-1]
 
         # ── Filter 0: Market Regime (checked FIRST) ───────────────────────────
         regime_pass = True
@@ -258,11 +261,10 @@ class Strategy:
 
         # Early exit: no point running other filters if regime blocks the trade
         if not regime_pass:
-            regime_mark = "❌"
-            mem_display = "N/A" if candidate == "LONG" else "N/A"
             print(
                 f"[STRATEGY] Filter check:\n"
-                f"  Regime         → {regime} {regime_mark}\n"
+                f"  Regime         → {regime} ❌\n"
+                f"  RSI range      → N/A\n"
                 f"  RSI memory     → N/A\n"
                 f"  Trend strength → N/A\n"
                 f"  RSI direction  → N/A\n"
@@ -270,7 +272,24 @@ class Strategy:
             )
             return "HOLD"
 
-        # ── Filter 1: RSI Overbought Memory (SHORT only) ──────────────────────
+        # ── Filter 1: RSI Range ───────────────────────────────────────────────
+        rsi_range_pass = True
+        if candidate == "LONG":
+            if not (RSI_LONG_MIN < rsi < RSI_LONG_MAX):
+                rsi_range_pass = False
+                print(
+                    f"[STRATEGY] BLOCKED — RSI {rsi:.1f} outside LONG range "
+                    f"({RSI_LONG_MIN}-{RSI_LONG_MAX}) ❌"
+                )
+        else:  # SHORT
+            if not (RSI_SHORT_MIN < rsi < RSI_SHORT_MAX):
+                rsi_range_pass = False
+                print(
+                    f"[STRATEGY] BLOCKED — RSI {rsi:.1f} outside SHORT range "
+                    f"({RSI_SHORT_MIN}-{RSI_SHORT_MAX}) ❌"
+                )
+
+        # ── Filter 2: RSI Overbought Memory (SHORT only) ──────────────────────
         rsi_memory_pass = True
         if candidate == "SHORT":
             last5_rsi = rsi_series.iloc[-5:] if len(rsi_series) >= 5 else rsi_series
@@ -282,7 +301,7 @@ class Strategy:
                     f"(max RSI last 5 bars: {max_rsi_recent:.1f})"
                 )
 
-        # ── Filter 2: Trend Strength (≥3 consecutive bars on correct side) ────
+        # ── Filter 3: Trend Strength (≥3 consecutive bars on correct side) ────
         trend_strength_pass = True
         if len(df_ind) >= 3:
             last3_close    = close_series.iloc[-3:].values
@@ -301,7 +320,7 @@ class Strategy:
             trend_strength_pass = False
             print(f"[STRATEGY] BLOCKED {candidate} — Not enough bars for trend strength check")
 
-        # ── Filter 3: RSI Direction (consistent over last 2 bars) ─────────────
+        # ── Filter 4: RSI Direction (consistent over last 2 bars) ─────────────
         rsi_direction_pass = True
         if len(rsi_series) >= 2:
             rsi_curr = rsi_series.iloc[-1]
@@ -319,20 +338,28 @@ class Strategy:
             print(f"[STRATEGY] BLOCKED {candidate} — Not enough bars for RSI direction check")
 
         # ── Filter summary ────────────────────────────────────────────────────
-        all_pass = rsi_memory_pass and trend_strength_pass and rsi_direction_pass
+        all_pass = (rsi_range_pass and rsi_memory_pass
+                    and trend_strength_pass and rsi_direction_pass)
         final    = candidate if all_pass else "HOLD"
 
-        regime_mark = "✅"
-        mem_mark    = "✅" if rsi_memory_pass    else "❌"
-        trend_mark  = "✅" if trend_strength_pass else "❌"
-        dir_mark    = "✅" if rsi_direction_pass  else "❌"
+        regime_mark    = "✅"
+        rsi_range_mark = "✅" if rsi_range_pass       else "❌"
+        mem_mark       = "✅" if rsi_memory_pass       else "❌"
+        trend_mark     = "✅" if trend_strength_pass   else "❌"
+        dir_mark       = "✅" if rsi_direction_pass    else "❌"
 
         # RSI memory filter only applies to SHORT; mark N/A for LONG
         mem_display = mem_mark if candidate == "SHORT" else "N/A"
 
+        # RSI range bounds depend on direction
+        rsi_bounds = (f"{RSI_LONG_MIN}-{RSI_LONG_MAX}"
+                      if candidate == "LONG"
+                      else f"{RSI_SHORT_MIN}-{RSI_SHORT_MAX}")
+
         print(
             f"[STRATEGY] Filter check:\n"
             f"  Regime         → {regime} {regime_mark}\n"
+            f"  RSI range      → {rsi_range_mark} (value: {rsi:.1f}, range: {rsi_bounds})\n"
             f"  RSI memory     → {mem_display}\n"
             f"  Trend strength → {trend_mark}\n"
             f"  RSI direction  → {dir_mark}\n"
@@ -350,6 +377,7 @@ class Strategy:
         print(
             f"[STRATEGY] Filter check:\n"
             f"  Regime         → {regime} (base condition not met)\n"
+            f"  RSI range      → N/A\n"
             f"  RSI memory     → N/A\n"
             f"  Trend strength → N/A\n"
             f"  RSI direction  → N/A\n"

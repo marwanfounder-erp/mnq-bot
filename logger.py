@@ -188,10 +188,11 @@ class TradeLogger:
 
     def close_trade(
         self,
-        trade_id:    int,
-        exit_price:  float,
-        exit_reason: str,          # "STOP" | "TARGET" | "SESSION_END" | "MANUAL"
-        daily_pnl:   float = 0.0,  # running daily P&L after this trade closes
+        trade_id:            int,
+        exit_price:          float,
+        exit_reason:         str,          # "STOP" | "TARGET" | "SESSION_END" | "MANUAL"
+        daily_pnl:           float = 0.0,  # running daily P&L after this trade closes
+        breakeven_activated: bool  = False, # True if SL was moved to entry during trade
     ) -> Optional[Dict]:
         """
         Record a trade closure and flush the completed row to CSV.
@@ -232,11 +233,12 @@ class TradeLogger:
         if _supabase_client is not None:
             try:
                 _supabase_client.table("trades").update({
-                    "exit_price":  exit_price,
-                    "exit_time":   now.isoformat(),
-                    "exit_reason": exit_reason,
-                    "pnl_dollars": round(dollar_pnl, 2),
-                    "daily_pnl":   round(daily_pnl, 2),
+                    "exit_price":           exit_price,
+                    "exit_time":            now.isoformat(),
+                    "exit_reason":          exit_reason,
+                    "pnl_dollars":          round(dollar_pnl, 2),
+                    "daily_pnl":            round(daily_pnl, 2),
+                    "breakeven_activated":  breakeven_activated,
                 }).eq("trade_id", trade_id).execute()
             except Exception as _e:
                 print(f"[LOGGER] Supabase close_trade update failed: {_e}")

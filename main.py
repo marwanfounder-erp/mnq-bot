@@ -72,12 +72,13 @@ def _log(msg: str):
 
 # ─── Active trade tracking (module-level so the signal handler can access it)─
 _active_trade: dict = {
-    "open":         False,
-    "trade_id":     None,
-    "side":         None,    # "Long" or "Short"
-    "entry_price":  None,
-    "stop_price":   None,
-    "target_price": None,
+    "open":                False,
+    "trade_id":            None,
+    "side":                None,    # "Long" or "Short"
+    "entry_price":         None,
+    "stop_price":          None,
+    "target_price":        None,
+    "breakeven_activated": False,   # True once SL is moved to entry price
 }
 
 # ─── Shared singleton objects ─────────────────────────────────────────────────
@@ -181,12 +182,13 @@ def reconcile_position():
 
     # Restore active trade tracking dict
     _active_trade.update({
-        "open":         True,
-        "trade_id":     trade_id,
-        "side":         side,
-        "entry_price":  entry_price,
-        "stop_price":   stop_price,
-        "target_price": target_price,
+        "open":                True,
+        "trade_id":            trade_id,
+        "side":                side,
+        "entry_price":         entry_price,
+        "stop_price":          stop_price,
+        "target_price":        target_price,
+        "breakeven_activated": False,   # unknown on restart; start conservative
     })
 
 
@@ -265,12 +267,13 @@ def open_position(signal: str, current_price: float):
 
     # ── Step 5: Update tracking state ────────────────────────────────────────
     _active_trade.update({
-        "open":         True,
-        "trade_id":     trade_id,
-        "side":         side,
-        "entry_price":  fill_price,
-        "stop_price":   stop_price,
-        "target_price": target_price,
+        "open":                True,
+        "trade_id":            trade_id,
+        "side":                side,
+        "entry_price":         fill_price,
+        "stop_price":          stop_price,
+        "target_price":        target_price,
+        "breakeven_activated": False,
     })
 
     # ── Step 6: Telegram alert — full detail including SL/TP ─────────────────
@@ -315,20 +318,22 @@ def close_position(reason: str, exit_price: float):
 
     # Flush to CSV log
     log.close_trade(
-        trade_id    = _active_trade["trade_id"],
-        exit_price  = exit_price,
-        exit_reason = reason,
-        daily_pnl   = risk.daily_pnl,
+        trade_id             = _active_trade["trade_id"],
+        exit_price           = exit_price,
+        exit_reason          = reason,
+        daily_pnl            = risk.daily_pnl,
+        breakeven_activated  = _active_trade.get("breakeven_activated", False),
     )
 
     # Reset tracking state
     _active_trade.update({
-        "open":         False,
-        "trade_id":     None,
-        "side":         None,
-        "entry_price":  None,
-        "stop_price":   None,
-        "target_price": None,
+        "open":                False,
+        "trade_id":            None,
+        "side":                None,
+        "entry_price":         None,
+        "stop_price":          None,
+        "target_price":        None,
+        "breakeven_activated": False,
     })
 
 
@@ -369,6 +374,39 @@ def run_iteration():
         if current_price is None:
             _log("[MAIN] Could not get current price — skipping exit check.")
             return
+
+        # ── Breakeven stop-loss activation ────────────────────────────────────
+        # When unrealized profit reaches +$15 (≈15 ticks × 10 shares), move
+        # the stop-loss to entry price so the trade cannot turn into a loss.
+        entry_price = _active_trade["entry_price"]
+        side        = _active_trade["side"]
+        if side == "Long":
+            unrealized_pnl = (current_price - entry_price) * ORDER_QTY
+        else:  # Short
+            unrealized_pnl = (entry_price - current_price) * ORDER_QTY
+
+        be_status = "ACTIVE ✅" if _active_trade["breakeven_activated"] else "pending"
+        _log(f"[MAIN] Position monitor: unrealized=${unrealized_pnl:+.2f}  breakeven={be_status}")
+
+        if unrealized_pnl >= 15.0 and not _active_trade["breakeven_activated"]:
+            # Compute breakeven price: 1 cent beyond entry so a flat exit is
+            # still a microscopic win rather than a dead-flat fill.
+            new_sl = round(entry_price + 0.01, 2) if side == "Long" \
+                     else round(entry_price - 0.01, 2)
+
+            # Cancel existing bracket orders and replace SL at breakeven.
+            # The TP level is unchanged — software monitoring continues to enforce it.
+            broker.cancel_all_orders()
+            stop_action = "Sell" if side == "Long" else "Buy"
+            broker.place_stop_order(stop_action, new_sl)
+
+            _active_trade["stop_price"]          = new_sl
+            _active_trade["breakeven_activated"] = True
+
+            _log(
+                f"[MAIN] ✅ Breakeven activated — SL moved to {new_sl:.2f}  "
+                f"(entry {entry_price:.2f}), risk now $0"
+            )
 
         exit_reason = strategy.check_exit(
             current_price = current_price,

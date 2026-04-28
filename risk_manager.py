@@ -24,6 +24,7 @@ from config import (
     NEWS_BLACKOUT_DATES,
     TRADING_START,
     TRADING_END,
+    TRADING_CUTOFF,
     TIMEZONE,
     STOP_LOSS_DOLLARS,
     TAKE_PROFIT_DOLLARS,
@@ -125,6 +126,18 @@ class RiskManager:
     def not_in_trade(self) -> bool:
         """Return True when no position is currently open."""
         return not self.in_trade
+
+    def is_past_entry_cutoff(self) -> bool:
+        """
+        Return True if the current ET time is past TRADING_CUTOFF (10:45 AM).
+        Blocks new entries too close to session end, ensuring at least
+        45 minutes remain for take-profit to be reached before 11:30 AM.
+        Only affects new entries — existing open trades continue to be managed.
+        """
+        now    = datetime.datetime.now(tz=self._tz)
+        cutoff = now.replace(hour=TRADING_CUTOFF[0], minute=TRADING_CUTOFF[1],
+                             second=0, microsecond=0)
+        return now > cutoff
 
     # ─────────────────────────────────────────────────────────────────────────
     # News calendar (Finnhub) — fetched once per day, cached in memory
@@ -313,6 +326,11 @@ class RiskManager:
 
         if not self.is_within_session():
             # Silently skip — this fires every polling interval outside hours
+            return False
+
+        if self.is_past_entry_cutoff():
+            print(f"[RISK] BLOCKED — Too late to enter new trade "
+                  f"(after {TRADING_CUTOFF[0]:02d}:{TRADING_CUTOFF[1]:02d} ET)")
             return False
 
         if self.is_news_blackout():

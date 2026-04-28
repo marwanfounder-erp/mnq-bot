@@ -76,8 +76,16 @@ EMA_FAST   = 9    # fast EMA period
 EMA_SLOW   = 21   # slow EMA period used as trend filter
 RSI_PERIOD = 14   # RSI lookback
 
-RSI_BUY_THRESHOLD  = 52   # go LONG only when RSI < this (not overbought; QQQ-tuned)
-RSI_SELL_THRESHOLD = 55   # go SHORT only when RSI > this (not oversold; QQQ-tuned)
+RSI_BUY_THRESHOLD  = 52   # legacy — superseded by RSI_LONG_MIN / RSI_LONG_MAX below
+RSI_SELL_THRESHOLD = 55   # legacy — superseded by RSI_SHORT_MIN / RSI_SHORT_MAX below
+
+# ─── RSI Range Filter (tighter entry bands) ───────────────────────────────────
+# LONG  sweet spot: oversold-recovery zone (RSI bouncing up from a dip)
+# SHORT sweet spot: overbought-pullback zone (RSI rolling over from a surge)
+RSI_LONG_MIN  = 35   # RSI must be > this for a LONG  (not deeply oversold)
+RSI_LONG_MAX  = 50   # RSI must be < this for a LONG  (not neutral/overbought)
+RSI_SHORT_MIN = 50   # RSI must be > this for a SHORT (not neutral/oversold)
+RSI_SHORT_MAX = 65   # RSI must be < this for a SHORT (not extreme overbought)
 
 BAR_TIMEFRAME = 1    # minutes per bar (1-minute bars)
 BARS_TO_FETCH = 100  # number of historical bars to pull for indicator warmup
@@ -105,9 +113,11 @@ DAILY_LOSS_LIMIT   = -800.0  # stop trading when daily realized P&L hits this
 
 # ─── Trading Hours (US Eastern Time) ─────────────────────────────────────────
 # Session: 9:30 AM – 11:00 AM ET  (first 90 min — highest QQQ liquidity)
-TRADING_START = (9, 30)    # (hour, minute) in US/Eastern
-TRADING_END   = (11, 30)   # (hour, minute) in US/Eastern  ← extended: more time to hit TP
-TIMEZONE      = "US/Eastern"
+TRADING_START   = (9, 30)    # (hour, minute) in US/Eastern
+TRADING_END     = (11, 30)   # (hour, minute) in US/Eastern  ← extended: more time to hit TP
+TRADING_CUTOFF  = (10, 45)   # (hour, minute) — no new entries after this time;
+                              # guarantees ≥45 min for TP to be reached before session end
+TIMEZONE        = "US/Eastern"
 
 # ─── News Blackout Dates ──────────────────────────────────────────────────────
 # No trading on days with high-impact macro events: NFP, FOMC, CPI
