@@ -49,7 +49,8 @@ SUPABASE_KEY = _env("SUPABASE_KEY")
 
 # ─── Finnhub API ──────────────────────────────────────────────────────────────
 # Free key from https://finnhub.io — used for live economic calendar lookups.
-# Optional — if not set, the news calendar falls back to NEWS_BLACKOUT_DATES.
+# Required for news blocking to work; if missing, calendar checks are skipped
+# and trading proceeds normally (no dates are hard-blocked).
 FINNHUB_API_KEY = _env("FINNHUB_API_KEY")
 
 # ─── Environment Flags ────────────────────────────────────────────────────────
@@ -120,26 +121,10 @@ TRADING_CUTOFF  = (10, 45)   # (hour, minute) — no new entries after this time
 TIMEZONE        = "US/Eastern"
 
 # ─── News Blackout Dates ──────────────────────────────────────────────────────
-# No trading on days with high-impact macro events: NFP, FOMC, CPI
-NEWS_BLACKOUT_DATES = [
-    # NFP (Non-Farm Payrolls) — first Friday of each month
-    "2025-01-10", "2025-02-07", "2025-03-07", "2025-04-04",
-    "2025-05-02", "2025-06-06", "2025-07-11", "2025-08-01",
-    "2025-09-05", "2025-10-03", "2025-11-07", "2025-12-05",
-    # FOMC Decision Days
-    "2025-01-29", "2025-03-19", "2025-05-07", "2025-06-18",
-    "2025-07-30", "2025-09-17", "2025-10-29", "2025-12-17",
-    # CPI Release Days
-    "2025-01-15", "2025-02-12", "2025-03-12", "2025-04-10",
-    "2025-05-13", "2025-06-11", "2025-07-10", "2025-08-12",
-    "2025-09-10", "2025-10-08", "2025-11-13", "2025-12-10",
-    # 2026 dates
-    "2026-01-09", "2026-01-14", "2026-01-28",
-    "2026-02-06", "2026-02-11", "2026-03-06",
-    "2026-03-11", "2026-03-18", "2026-04-03",
-    "2026-04-10", "2026-04-28",
-    "2026-05-08", "2026-05-12",
-]
+# Intentionally empty — all news blocking is handled dynamically via Finnhub.
+# FOMC, NFP, and CPI are detected by keyword from the live economic calendar.
+# Set FINNHUB_API_KEY in .env; see risk_manager.py → check_news_calendar().
+NEWS_BLACKOUT_DATES: list = []
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 LOG_FILE       = "trades.csv"   # CSV trade journal location

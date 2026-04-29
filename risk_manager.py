@@ -21,7 +21,6 @@ from typing import Optional
 from config import (
     DAILY_LOSS_LIMIT,
     MAX_TRADES_PER_DAY,
-    NEWS_BLACKOUT_DATES,
     TRADING_START,
     TRADING_END,
     TRADING_CUTOFF,
@@ -77,14 +76,26 @@ class RiskManager:
     # ─────────────────────────────────────────────────────────────────────────
 
     def _check_new_day(self):
-        """Reset daily counters if the calendar date has rolled over."""
+        """
+        Reset daily counters and news cache when the calendar date rolls over.
+        Explicitly clears all news state so check_news_calendar() always
+        re-fetches for the new day with a clean slate.
+        """
         today = datetime.datetime.now(tz=self._tz).date()
-        if self._today != today:
-            self._today = today
-            self.trades_today = 0
-            self.daily_pnl = 0.0
-            self.trading_halted = False
-            print(f"[RISK] New trading day: {today}  —  daily counters reset.")
+        if self._today == today:
+            return
+        self._today = today
+        # ── Trade counters ────────────────────────────────────────────────────
+        self.trades_today   = 0
+        self.daily_pnl      = 0.0
+        self.trading_halted = False
+        # ── News state — force re-fetch on next can_trade() call ─────────────
+        self._news_cache_date = None
+        self._day_blocked     = False
+        self._session_delayed = False
+        self._effective_start = TRADING_START
+        self._news_events     = []
+        print(f"[RISK] New trading day: {today}")
 
     # ─────────────────────────────────────────────────────────────────────────
     # Individual rule checks
@@ -106,14 +117,11 @@ class RiskManager:
 
     def is_news_blackout(self) -> bool:
         """
-        Return True if today is a high-impact news day.
-        Checks both the dynamic FOMC flag set by check_news_calendar()
-        and the static NEWS_BLACKOUT_DATES list in config.
+        Return True if today is a high-impact news day (FOMC / NFP / CPI).
+        Determined solely by the Finnhub calendar fetched each morning —
+        no static date list involved.
         """
-        if self._day_blocked:
-            return True
-        today_str = datetime.datetime.now(tz=self._tz).date().isoformat()
-        return today_str in NEWS_BLACKOUT_DATES
+        return self._day_blocked
 
     def under_trade_limit(self) -> bool:
         """Return True if we have not yet hit the max-trades-per-day cap."""
@@ -143,10 +151,18 @@ class RiskManager:
     # News calendar (Finnhub) — fetched once per day, cached in memory
     # ─────────────────────────────────────────────────────────────────────────
 
-    # Keywords in event names that indicate an FOMC / Fed rate decision
+    # Keywords that trigger a full-day block (entire session cancelled)
     _FOMC_KEYWORDS = frozenset([
         "fomc", "fed funds", "rate decision", "federal reserve",
-        "interest rate decision", "monetary policy",
+        "interest rate decision", "monetary policy", "federal open market",
+    ])
+    _NFP_KEYWORDS = frozenset([
+        "nonfarm payroll", "non-farm payroll", "nfp",
+        "employment situation", "payrolls",
+    ])
+    _CPI_KEYWORDS = frozenset([
+        "consumer price index", "cpi", "core cpi",
+        "inflation rate", "core inflation",
     ])
 
     def check_news_calendar(self) -> None:
@@ -154,15 +170,18 @@ class RiskManager:
         Fetch today's high-impact US economic events from Finnhub once per day.
 
         Side-effects:
-          • _news_events  — list of dicts consumed by the dashboard
-          • _day_blocked  — True if an FOMC event is detected (entire day halted)
+          • _news_events     — list of dicts consumed by the dashboard
+          • _day_blocked     — True if FOMC / NFP / CPI detected (full day blocked)
           • _session_delayed — True if a pre-10AM event delays session start
           • _effective_start — overridden to (10, 0) when session is delayed
-        Falls back silently to the static NEWS_BLACKOUT_DATES if the API call fails.
+        If the API call fails, logs the error and leaves the day unblocked
+        (conservative: allow trading when calendar is unavailable).
         """
         today = datetime.datetime.now(tz=self._tz).date()
         if self._news_cache_date == today:
             return   # already fetched today — nothing to do
+
+        print("[NEWS] Checking Finnhub calendar...")
 
         # Reset for the new day before we know the result
         self._news_cache_date  = today
@@ -175,7 +194,7 @@ class RiskManager:
             raw_events = self._fetch_finnhub_events(today)
             self._process_news_events(raw_events)
         except Exception as exc:
-            print(f"[NEWS] API unavailable ({exc}) — using static blackout dates only.")
+            print(f"[NEWS] API unavailable ({exc}) — calendar check skipped, trading normally.")
 
     def _fetch_finnhub_events(self, date: datetime.date) -> list:
         """
@@ -200,6 +219,14 @@ class RiskManager:
         """
         Filter for high-impact US events, classify each one, and populate
         _news_events / _day_blocked / _session_delayed / _effective_start.
+
+        Full-day block triggers (entire session cancelled):
+            • FOMC rate decision
+            • NFP  (Non-Farm Payrolls)
+            • CPI  (Consumer Price Index)
+
+        Session-delay trigger (start pushed to 10:00 ET):
+            • Any other high-impact event before 10:00 AM ET
         """
         _UTC = ZoneInfo("UTC")
         high_us = [
@@ -217,22 +244,26 @@ class RiskManager:
             et_hour, et_minute, time_et_str = self._parse_event_time(time_raw, _UTC)
 
             # Classify the event
-            is_fomc = any(kw in event_name.lower() for kw in self._FOMC_KEYWORDS)
+            name_lower = event_name.lower()
+            is_fomc = any(kw in name_lower for kw in self._FOMC_KEYWORDS)
+            is_nfp  = any(kw in name_lower for kw in self._NFP_KEYWORDS)
+            is_cpi  = any(kw in name_lower for kw in self._CPI_KEYWORDS)
 
-            if is_fomc:
+            if is_fomc or is_nfp or is_cpi:
                 status = "BLOCKED"
                 self._day_blocked = True
+                event_type = "FOMC" if is_fomc else ("NFP" if is_nfp else "CPI")
+                print(f"[NEWS] {event_type} detected → day blocked  "
+                      f"({event_name} @ {time_et_str} ET)")
             elif et_hour < 10:
-                # Event before 10:00 AM ET — delay session start to 10:00
+                # High-impact event before 10:00 AM ET — delay session start
                 status = "DELAYED"
                 self._session_delayed = True
                 self._effective_start = (10, 0)
-            elif (et_hour > TRADING_END[0]
-                  or (et_hour == TRADING_END[0] and et_minute > TRADING_END[1])):
-                # Event after session end — no impact on trading
-                status = "CLEAR"
+                print(f"[NEWS] Pre-market event → session delayed to 10:00 ET  "
+                      f"({event_name} @ {time_et_str} ET)")
             else:
-                # Event falls inside the 10:00–11:30 window
+                # Event during or after session window — no trading impact
                 status = "CLEAR"
 
             self._news_events.append({
@@ -242,24 +273,18 @@ class RiskManager:
                 "status":  status,
             })
 
-        # ── Logging ──────────────────────────────────────────────────────────
+        # ── Overall status log ────────────────────────────────────────────────
         if not high_us:
-            print("[NEWS] No high-impact US events today — trading normally.")
+            print("[NEWS] Clear → trading normally")
             return
 
-        event_summary = ", ".join(
-            f"{e['event']} @ {e['time_et']} ET" for e in self._news_events
-        )
-        print(f"[NEWS] Today's high-impact US events: {event_summary}")
-
         if self._day_blocked:
-            print("[NEWS] FOMC day detected — entire session BLOCKED.")
+            pass   # individual event lines above already logged the block reason
         elif self._session_delayed:
             start = self._effective_start
-            print(f"[NEWS] Pre-10AM event found — delaying session start to "
-                  f"{start[0]:02d}:{start[1]:02d} ET.")
+            print(f"[NEWS] Session delayed to {start[0]:02d}:{start[1]:02d} ET.")
         else:
-            print("[NEWS] Events outside session window — no trading impact.")
+            print("[NEWS] Clear → trading normally")
 
     @staticmethod
     def _parse_event_time(
