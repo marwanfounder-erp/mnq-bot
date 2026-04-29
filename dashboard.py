@@ -378,7 +378,7 @@ def render_news_events(state: dict):
         .map(_colour_impact, subset=["Impact"])
     )
 
-    st.dataframe(styled, hide_index=True, use_container_width=True)
+    st.dataframe(styled, hide_index=True, width="stretch")
 
 
 def render_indicators(state: dict):
