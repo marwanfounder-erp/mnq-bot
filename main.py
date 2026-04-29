@@ -349,6 +349,11 @@ def run_iteration():
     """
     now = datetime.datetime.now(tz=_tz)
 
+    # ── News calendar — always fetch once per day regardless of session state ──
+    # Ensures the dashboard shows today's news events even outside session hours
+    # (e.g. pre-market Railway restarts).  No-op after the first call each day.
+    risk.check_news_calendar()
+
     # ── Session bounds ────────────────────────────────────────────────────────
     session_start = now.replace(hour=TRADING_START[0], minute=TRADING_START[1],
                                 second=0, microsecond=0)
