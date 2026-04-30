@@ -70,6 +70,9 @@ def _log(msg: str):
         _log_buffer.pop(0)
 
 
+# ─── Session-open log (fire once per day when the effective session opens) ────
+_session_open_logged: "datetime.date | None" = None
+
 # ─── Active trade tracking (module-level so the signal handler can access it)─
 _active_trade: dict = {
     "open":                False,
@@ -96,11 +99,12 @@ _tz      = ZoneInfo(TIMEZONE)
 def _emit_heartbeat_if_due():
     """Log a keep-alive line every 5 minutes when outside session hours."""
     global _last_heartbeat
-    now = datetime.datetime.now(tz=_tz)
-    ss  = now.replace(hour=TRADING_START[0], minute=TRADING_START[1], second=0, microsecond=0)
-    se  = now.replace(hour=TRADING_END[0],   minute=TRADING_END[1],   second=0, microsecond=0)
+    now       = datetime.datetime.now(tz=_tz)
+    eff_start = risk.effective_start   # respects news-delay (may be 10:00 instead of 9:30)
+    ss  = now.replace(hour=eff_start[0], minute=eff_start[1], second=0, microsecond=0)
+    se  = now.replace(hour=TRADING_END[0], minute=TRADING_END[1], second=0, microsecond=0)
     if ss <= now <= se:
-        return   # inside session — heartbeat not needed
+        return   # inside effective session — heartbeat not needed
     if time.time() - _last_heartbeat >= _HEARTBEAT_INTERVAL:
         _log(f"[HEARTBEAT] Bot alive — waiting for session  ({now.strftime('%H:%M ET')})")
         _last_heartbeat = time.time()
@@ -118,11 +122,12 @@ def _watchdog_thread():
     """
     while True:
         time.sleep(60)   # check every minute
-        now = datetime.datetime.now(tz=_tz)
-        ss  = now.replace(hour=TRADING_START[0], minute=TRADING_START[1], second=0, microsecond=0)
-        se  = now.replace(hour=TRADING_END[0],   minute=TRADING_END[1],   second=0, microsecond=0)
+        now       = datetime.datetime.now(tz=_tz)
+        eff_start = risk.effective_start   # respects news-delay
+        ss  = now.replace(hour=eff_start[0], minute=eff_start[1], second=0, microsecond=0)
+        se  = now.replace(hour=TRADING_END[0], minute=TRADING_END[1], second=0, microsecond=0)
         if not (ss <= now <= se):
-            continue   # only watch during session hours
+            continue   # only watch during effective session hours
         elapsed = time.time() - _last_activity
         if elapsed >= _WATCHDOG_THRESHOLD:
             mins = int(elapsed // 60)
@@ -354,24 +359,31 @@ def run_iteration():
     # (e.g. pre-market Railway restarts).  No-op after the first call each day.
     risk.check_news_calendar()
 
-    # ── Session bounds ────────────────────────────────────────────────────────
-    session_start = now.replace(hour=TRADING_START[0], minute=TRADING_START[1],
+    # ── Session bounds — use effective_start (may be 10:00 when news delays) ──
+    global _session_open_logged
+    eff_start     = risk.effective_start
+    session_start = now.replace(hour=eff_start[0], minute=eff_start[1],
                                 second=0, microsecond=0)
-    session_end   = now.replace(hour=TRADING_END[0],   minute=TRADING_END[1],
+    session_end   = now.replace(hour=TRADING_END[0], minute=TRADING_END[1],
                                 second=0, microsecond=0)
     in_session    = session_start <= now <= session_end
 
     # ── Outside session: close any stale position, then wait ─────────────────
-    # Handles both post-session restarts (after 11:30 ET) AND pre-session
-    # restarts (e.g. 4 AM Railway redeploy) so we never trade outside hours.
     if not in_session:
         if _active_trade["open"]:
             boundary = ("Session end" if now > session_end
-                        else f"Pre-session restart (session opens {TRADING_START[0]:02d}:{TRADING_START[1]:02d} ET)")
+                        else f"Pre-session restart (session opens {eff_start[0]:02d}:{eff_start[1]:02d} ET)")
             _log(f"[MAIN] {boundary} — force-closing open position.")
             current_price = broker.get_current_price() or _active_trade["entry_price"]
             close_position("SESSION_END", current_price)
         return   # nothing to do outside session hours
+
+    # ── Log once when the effective session opens (useful for delayed days) ───
+    today = now.date()
+    if _session_open_logged != today:
+        _session_open_logged = today
+        delay_note = " (news-delayed)" if risk.session_delayed else ""
+        _log(f"[MAIN] Session now active ({eff_start[0]:02d}:{eff_start[1]:02d} ET){delay_note}")
 
     # ── If currently in a trade: monitor for SL/TP ───────────────────────────
     if _active_trade["open"]:
@@ -559,16 +571,21 @@ def main():
     # ── Reconcile any position that survived a restart / redeploy ────────────
     reconcile_position()
 
+    # ── Fetch news calendar early so the startup banner reflects any delay ────
+    risk.check_news_calendar()
+
     print(f"[MAIN] Risk status: {risk.status_summary()}")
 
     # ── Log current session status so Railway shows why we may be waiting ────
-    _now = datetime.datetime.now(tz=_tz)
-    _ss  = _now.replace(hour=TRADING_START[0], minute=TRADING_START[1], second=0, microsecond=0)
-    _se  = _now.replace(hour=TRADING_END[0],   minute=TRADING_END[1],   second=0, microsecond=0)
+    _now       = datetime.datetime.now(tz=_tz)
+    _eff_start = risk.effective_start
+    _ss  = _now.replace(hour=_eff_start[0], minute=_eff_start[1], second=0, microsecond=0)
+    _se  = _now.replace(hour=TRADING_END[0], minute=TRADING_END[1], second=0, microsecond=0)
     if _ss <= _now <= _se:
         print(f"[MAIN] Session is OPEN — trading until {TRADING_END[0]:02d}:{TRADING_END[1]:02d} ET.")
     elif _now < _ss:
-        print(f"[MAIN] Pre-session — waiting for {TRADING_START[0]:02d}:{TRADING_START[1]:02d} ET open.")
+        delay_note = " (news-delayed)" if risk.session_delayed else ""
+        print(f"[MAIN] Pre-session — waiting for {_eff_start[0]:02d}:{_eff_start[1]:02d} ET open{delay_note}.")
     else:
         print(f"[MAIN] Session CLOSED for today — waiting for next trading day.")
 

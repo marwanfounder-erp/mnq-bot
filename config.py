@@ -116,8 +116,8 @@ DAILY_LOSS_LIMIT   = -800.0  # stop trading when daily realized P&L hits this
 # Session: 9:30 AM – 11:00 AM ET  (first 90 min — highest QQQ liquidity)
 TRADING_START   = (9, 30)    # (hour, minute) in US/Eastern
 TRADING_END     = (11, 30)   # (hour, minute) in US/Eastern  ← extended: more time to hit TP
-TRADING_CUTOFF  = (10, 45)   # (hour, minute) — no new entries after this time;
-                              # guarantees ≥45 min for TP to be reached before session end
+TRADING_CUTOFF  = (11, 0)    # (hour, minute) — no new entries after this time;
+                              # guarantees ≥30 min for TP to be reached before session end
 TIMEZONE        = "US/Eastern"
 
 # ─── News Blackout Dates ──────────────────────────────────────────────────────
