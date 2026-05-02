@@ -84,7 +84,7 @@ RSI_SELL_THRESHOLD = 55   # legacy — superseded by RSI_SHORT_MIN / RSI_SHORT_M
 # LONG  sweet spot: oversold-recovery zone (RSI bouncing up from a dip)
 # SHORT sweet spot: overbought-pullback zone (RSI rolling over from a surge)
 RSI_LONG_MIN  = 35   # RSI must be > this for a LONG  (not deeply oversold)
-RSI_LONG_MAX  = 58   # RSI must be < this for a LONG  (not neutral/overbought)
+RSI_LONG_MAX  = 55   # RSI must be < this for a LONG  (not neutral/overbought)
 RSI_SHORT_MIN = 50   # RSI must be > this for a SHORT (not neutral/oversold)
 RSI_SHORT_MAX = 65   # RSI must be < this for a SHORT (not extreme overbought)
 
